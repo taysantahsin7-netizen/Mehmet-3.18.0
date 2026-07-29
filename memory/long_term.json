@@ -5,9 +5,19 @@
       "updated": "2026-06-29"
     }
   },
-  "preferences": {},
+  "preferences": {
+    "Best_game": {
+      "value": "RDR2",
+      "updated": "2026-06-29"
+    }
+  },
   "projects": {},
   "relationships": {},
-  "wishes": {},
+  "wishes": {
+    "what_wants_most": {
+      "value": "A good PC",
+      "updated": "2026-06-29"
+    }
+  },
   "notes": {}
 }

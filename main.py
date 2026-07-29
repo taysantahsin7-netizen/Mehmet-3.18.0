@@ -1,20 +1,31 @@
+import platform as _platform
+import subprocess as _subprocess
+
+# ── Nuclear: force CREATE_NO_WINDOW on EVERY subprocess call on Windows ───────
+# This patches Popen itself, so no per-file flag is needed anywhere.
+if _platform.system() == "Windows":
+    _OrigPopen = _subprocess.Popen
+
+    class _Popen(_OrigPopen):
+        def __init__(self, args, **kw):
+            kw["creationflags"] = kw.get("creationflags", 0) | _subprocess.CREATE_NO_WINDOW
+            kw.pop("startupinfo", None)   # drop any stale/shared STARTUPINFO
+            super().__init__(args, **kw)
+
+    _subprocess.Popen = _Popen
+# ─────────────────────────────────────────────────────────────────────────────
+
 import asyncio
-import code
-import cv2
-import numpy as np
 import re
-import socket
-import struct
 import threading
+import time
 import json
 import sys
 import traceback
-from pathlib import Path
-import shutil
-import os
-import subprocess
-import tempfile
 from datetime import datetime
+from pathlib import Path
+import os
+import shutil
 
 import sounddevice as sd
 from google import genai
@@ -27,14 +38,11 @@ from memory.memory_manager import (
 from actions.file_processor import file_processor
 from actions.flight_finder     import flight_finder
 from actions.open_app          import open_app
-from actions.davinci_macro import davinci_macro_action
 from actions.weather_report    import weather_action
-from actions.mod_menu_injected import mod_menu_injected
-from actions.cinematic_video import cinematic_video
 from actions.send_message      import send_message
 from actions.reminder          import reminder
 from actions.computer_settings import computer_settings
-from actions.screen_processor  import screen_process
+from actions.screen_processor  import _capture_camera, _capture_screen
 from actions.youtube_video     import youtube_video
 from actions.desktop           import desktop_control
 from actions.browser_control   import browser_control
@@ -45,18 +53,21 @@ from actions.web_search        import web_search as web_search_action
 from actions.computer_control  import computer_control
 from actions.game_updater      import game_updater
 from actions.system_monitor    import SystemMonitor, get_system_status
+from actions.proactive         import ProactiveEngine
+from actions.web_search        import _news as _fetch_news_sync
+from memory.config_manager     import get_brief_enabled
 
 SOURCE_FOLDER = r"C:\Users\taysa\Downloads"
 
 # Kategoriler
 FILE_TYPES = {
-    "Images": [".png", ".jpg", ".jpeg", ".gif", ".webp"],
-    "Videos": [".mp4", ".mov", ".avi", ".mkv"],
-    "Music": [".mp3", ".wav", ".ogg"],
-    "Documents": [".pdf", ".docx", ".txt", ".pptx", ".xlsx"],
-    "Archives": [".zip", ".rar", ".7z"],
-    "Programs": [".exe", ".msi"],
-    "Code": [".py", ".js", ".html", ".css", ".json"],
+    "Fotğraflar": [".png", ".jpg", ".jpeg", ".gif", ".webp"],
+    "Videolar": [".mp4", ".mov", ".avi", ".mkv"],
+    "Müzik": [".mp3", ".wav", ".ogg"],
+    "Belgeler": [".pdf", ".docx", ".txt", ".pptx", ".xlsx", ".torrent"],
+    "Arşivler": [".zip", ".rar", ".7z"],
+    "Programlar": [".exe", ".msi"],
+    "Kod": [".py", ".js", ".html", ".css", ".json"],
 }
 
 for file in os.listdir(SOURCE_FOLDER):
@@ -73,150 +84,6 @@ for file in os.listdir(SOURCE_FOLDER):
             print(f"{file} -> {folder}")
             moved = True
             break
-
-BLENDER_EXE   = r"C:\Program Files\Blender Foundation\Blender 4.2\blender.exe"
-BLENDER_HOST  = "127.0.0.1"
-BLENDER_PORT  = 5000
-# blender_connector.py içindeki AUTH_TOKEN ile BİREBİR aynı olmalı.
-BLENDER_AUTH_TOKEN = "mehmet-local-secret"
-
-
-def _ensure_blender_running(wait_seconds: float = 25.0) -> bool:
-    """Blender açık değilse BLENDER_EXE ile başlatır ve connector portunun
-    açılmasını bekler. Zaten açıksa hemen True döner."""
-    import time as _time
-
-    def _port_open():
-        try:
-            with socket.create_connection((BLENDER_HOST, BLENDER_PORT), timeout=0.5):
-                return True
-        except OSError:
-            return False
-
-    if _port_open():
-        return True
-    if not os.path.isfile(BLENDER_EXE):
-        return False
-
-    try:
-        subprocess.Popen([BLENDER_EXE], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except Exception:
-        return False
-
-    deadline = _time.time() + wait_seconds
-    while _time.time() < deadline:
-        if _port_open():
-            return True
-        _time.sleep(1.0)
-    return False
-
-def _send_blender_command(payload: dict, timeout: float = 30.0) -> dict:
-    """blender_connector.py'ye uzunluk-önekli (length-prefixed) JSON komutu
-    gönderir ve yapılandırılmış {success, result|error} cevabını döndürür."""
-    payload = dict(payload)
-    payload["token"] = BLENDER_AUTH_TOKEN
-    data = json.dumps(payload).encode("utf-8")
-
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.settimeout(timeout)
-    try:
-        s.connect((BLENDER_HOST, BLENDER_PORT))
-        s.sendall(struct.pack(">I", len(data)) + data)
-
-        header = b""
-        while len(header) < 4:
-            chunk = s.recv(4 - len(header))
-            if not chunk:
-                raise ConnectionError("Blender bağlantısı erken kesildi.")
-            header += chunk
-        (length,) = struct.unpack(">I", header)
-
-        body = b""
-        while len(body) < length:
-            chunk = s.recv(min(65536, length - len(body)))
-            if not chunk:
-                raise ConnectionError("Blender cevabı eksik geldi.")
-            body += chunk
-
-        return json.loads(body.decode("utf-8"))
-    finally:
-        s.close()
-
-def prepare_image_for_blender(image_path: str) -> str:
-    """Görseli height-map mesh üretimi için ön işler: griye çevirir, gürültüyü
-    kenarları koruyarak azaltır, kontrastı artırır ve aşırı büyük görselleri
-    küçültür (performans için)."""
-    img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-    if img is None:
-        raise ValueError(f"Görsel okunamadı: {image_path}")
-
-    max_dim = 1024
-    h, w = img.shape[:2]
-    if max(h, w) > max_dim:
-        scale = max_dim / max(h, w)
-        img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
-
-    img = cv2.bilateralFilter(img, d=5, sigmaColor=40, sigmaSpace=40)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    processed_img = clahe.apply(img)
-
-    out_path = os.path.join(tempfile.gettempdir(), "mehmet_depth_map.png")
-    cv2.imwrite(out_path, processed_img)
-    return out_path
-
-
-def blender_creator(generated_code: str) -> str:
-    """Serbest-form bpy/bmesh kodu üretip Blender'a çalıştırması için gönderir
-    (genel modelleme istekleri için; image_to_3d_model özel görsel->3D akışı içindir)."""
-    clean_code = generated_code.strip()
-    if not clean_code:
-        return "Boş kod, Blender'a gönderilmedi."
-
-    if not _ensure_blender_running():
-        return "Blender açık değil ve otomatik başlatılamadı. Lütfen Blender'ı açıp eklentiyi etkinleştir."
-
-    try:
-        response = _send_blender_command({"type": "exec", "code": clean_code})
-    except Exception as e:
-        return f"Blender ile iletişim koptu: {e}"
-
-    if response.get("success"):
-        return f"Blender'a başarıyla ulaştım Kral: {response.get('result')}"
-    return f"Blender kodu çalıştırırken hata verdi: {response.get('error')}"
-
-def image_to_3d_model(image_path: str, resolution: int = 96, height_scale: float = 0.6,
-                       solid: bool = True) -> str:
-    """Bir görseli, sahte shader efekti değil GERÇEK vertex/face geometrisine
-    sahip bir 3D mesh'e (height-map relief) dönüştürür ve Blender'da oluşturur."""
-    if not image_path or not os.path.isfile(image_path):
-        return f"Görsel bulunamadı: {image_path}"
-
-    try:
-        processed_path = prepare_image_for_blender(image_path)
-    except Exception as e:
-        return f"Görsel ön işlenirken hata oluştu: {e}"
-
-    if not _ensure_blender_running():
-        return "Blender açık değil ve otomatik başlatılamadı. Lütfen Blender'ı açıp eklentiyi etkinleştir."
-
-    try:
-        response = _send_blender_command({
-            "type": "image_to_mesh",
-            "image_path": processed_path,
-            "resolution": resolution,
-            "height_scale": height_scale,
-            "solid": solid,
-        }, timeout=60.0)
-    except Exception as e:
-        return f"Blender ile iletişim koptu: {e}"
-
-    if response.get("success"):
-        r = response.get("result", {})
-        return (
-            f"3D model oluşturuldu Kral: '{r.get('object')}' — "
-            f"{r.get('vertices')} vertex, {r.get('faces')} face."
-        )
-    return f"3D model oluşturulamadı: {response.get('error')}"              
 
 def get_base_dir():
     if getattr(sys, "frozen", False):
@@ -244,6 +111,7 @@ def _load_system_prompt() -> str:
     except Exception:
         return (
             "You are Mehmet, Kurdish AI assistant. "
+            "You coded by BaranT"
             "Be concise, direct, and always use the provided tools to complete tasks. "
             "Never simulate or guess results — always call the appropriate tool."
         )
@@ -292,66 +160,6 @@ TOOL_DECLARATIONS = [
                 "aspect": {"type": "STRING", "description": "Comparison aspect: price | specs | reviews | features"},
             },
             "required": ["query"]
-        }
-    },
-    {
-        "name": "davinci_macro",
-        "description": "Automates DaVinci Resolve Free via GUI macro for media import and assembly.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "media_paths": {"type": "ARRAY", "items": {"type": "STRING"}}
-            },
-            "required": ["media_paths"]
-        }
-    },
-    {
-        "name": "blender_creator",
-        "description": (
-            "Generates pure Blender Python (bpy) code to build 3D models, meshes, materials, and lighting based on user request. "
-            "The model must output a valid, raw Python string that will be sent directly to Blender. "
-            "Always include 'import bpy' at the top of the generated code."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "generated_code": {
-                    "type": "STRING",
-                    "description": "The complete Blender Python script to execute. E.g., mesh creation, modifiers, materials."
-                }
-            },
-            "required": ["generated_code"]
-        }
-    },
-    {
-        "name": "image_to_3d_model",
-        "description": (
-            "Converts an uploaded or referenced image into a real 3D mesh in Blender — a height-map "
-            "relief built from actual vertex/face geometry (not a fake shader trick), UV-mapped with "
-            "the original image as its texture. Use whenever the user asks to turn a picture/photo "
-            "into a 3D model, statue, relief, or sculpture."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "image_path": {
-                    "type": "STRING",
-                    "description": "Full path to the source image. Leave empty to use the currently uploaded image."
-                },
-                "resolution": {
-                    "type": "INTEGER",
-                    "description": "Mesh grid resolution along the wider image axis (32-512, default: 96). Higher = more detail, slower."
-                },
-                "height_scale": {
-                    "type": "NUMBER",
-                    "description": "Relief height relative to model width (default: 0.6)."
-                },
-                "solid": {
-                    "type": "BOOLEAN",
-                    "description": "If true, adds a flat base so the mesh is a closed, printable volume (default: true)."
-                }
-            },
-            "required": []
         }
     },
     {
@@ -424,11 +232,12 @@ TOOL_DECLARATIONS = [
     {
         "name": "screen_process",
         "description": (
-            "Captures and analyzes the screen or webcam image. "
+            "Captures the screen or webcam image and lets you analyze it. "
             "MUST be called when user asks what is on screen, what you see, "
-            "analyze my screen, look at camera, etc. "
+            "look at camera, analyze my screen, etc. "
             "You have NO visual ability without this tool. "
-            "After calling this tool, stay SILENT — the vision module speaks directly."
+            "After the image is captured it is sent directly to you — describe what you see and answer the user's question. "
+            "When using camera: the live view stays open until user says close it or calls close_camera."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -438,6 +247,15 @@ TOOL_DECLARATIONS = [
             },
             "required": ["text"]
         }
+    },
+    {
+        "name": "close_camera",
+        "description": (
+            "Closes the live camera view shown on screen. "
+            "Call when user says: close camera, stop camera, turn off camera, "
+            "kamerayı kapat, kapat, creepy, etc."
+        ),
+        "parameters": {"type": "OBJECT", "properties": {}, "required": []}
     },
     {
         "name": "computer_settings",
@@ -462,6 +280,9 @@ TOOL_DECLARATIONS = [
         "description": (
             "Controls any web browser. Use for: opening websites, searching the web, "
             "clicking elements, filling forms, scrolling, screenshots, navigation, any web-based task. "
+            "Simple open/search requests launch the user's own browser normally (their real profile "
+            "and logged-in accounts); interactive actions (click, type, fill_form...) attach an "
+            "automation browser. "
             "Always pass the 'browser' parameter when the user specifies a browser (e.g. 'open in Edge', "
             "'use Firefox', 'open Chrome'). Multiple browsers can run simultaneously."
         ),
@@ -734,19 +555,29 @@ class MehmetLive:
 
     def __init__(self, ui: MehmetUI):
         self.ui             = ui
-        self.session        = None
-        self.audio_in_queue = None
-        self.out_queue      = None
-        self._loop          = None
-        self._is_speaking   = False
-        self._speaking_lock = threading.Lock()
-        self._phone_active  = False   # True while phone mic is streaming; pauses PC mic
-        self.ui.on_text_command  = self._on_text_command
+        self._asst_name     = "Mehmet"   # updated each session from config
+        self.session              = None
+        self.audio_in_queue       = None
+        self.out_queue            = None
+        self._loop                = None
+        self._is_speaking         = False
+        self._speaking_lock       = threading.Lock()
+        self._phone_active        = False   # True while phone mic is streaming; pauses PC mic
+        self._pending_vision       = None    # (img_bytes, mime_type, question, angle) to inject after tool response
+        self._vision_cam_active    = False   # True if camera was opened for vision → auto-close after response
+        self._vision_close_pending = False   # True after vision injected; next turn_complete closes camera
+        self._vision_last_time     = 0.0     # monotonic time of last screen_process call (cooldown guard)
+        self._vision_busy          = False   # True while a vision capture/inject cycle is in flight
+        self._interrupted          = False   # True while draining audio after user interrupt
+        self.ui.on_text_command   = self._on_text_command
         self.ui.on_remote_clicked = self._make_remote_key
+        self.ui.on_interrupt      = self.interrupt
         self._turn_done_event: asyncio.Event | None = None
         self._dashboard     = None
-        self._briefing_sent = False          # morning briefing fires once per process
-        self._sys_monitor   = SystemMonitor()  # persistent cooldown state
+        self._briefing_sent    = False          # morning briefing fires once per process
+        self._sys_monitor      = SystemMonitor()  # persistent cooldown state
+        self._proactive        = ProactiveEngine()
+        self._last_user_speech = time.monotonic()  # updated on every user utterance
 
     def _make_remote_key(self):
         """Called from Qt main thread when user presses Remote Control."""
@@ -780,6 +611,25 @@ class MehmetLive:
         elif not self.ui.muted:
             self.ui.set_state("LISTENING")
 
+    def interrupt(self) -> None:
+        """Stop Mehmet mid-speech: drain queued audio and open mic immediately."""
+        self._interrupted = True
+        q = self.audio_in_queue
+        if q:
+            drained = 0
+            while True:
+                try:
+                    q.get_nowait()
+                    drained += 1
+                except Exception:
+                    break
+            if drained:
+                print(f"[Mehmet] ✋ Interrupted — {drained} audio chunks discarded")
+        self.set_speaking(False)
+        if self._turn_done_event:
+            self._turn_done_event.clear()
+        self.ui.write_log("SYS: Interrupted — listening...")
+
     def speak(self, text: str):
         if not self._loop or not self.session:
             return
@@ -799,6 +649,15 @@ class MehmetLive:
     def _build_config(self) -> types.LiveConnectConfig:
         from datetime import datetime
 
+        # Load customization from config
+        try:
+            _cfg = json.loads(open(API_CONFIG_PATH, encoding="utf-8").read())
+            self._asst_name = (_cfg.get("assistant_name") or "Mehmet").strip()
+            _user_name = (_cfg.get("user_name") or "").strip()
+        except Exception:
+            self._asst_name = "Mehmet"
+            _user_name = ""
+
         memory     = load_memory()
         mem_str    = format_memory_for_prompt(memory)
         sys_prompt = _load_system_prompt()
@@ -811,7 +670,19 @@ class MehmetLive:
             f"Use this to calculate exact times for reminders.\n\n"
         )
 
-        parts = [time_ctx]
+        # Identity injection — overrides any hardcoded name in prompt.txt
+        _addr = (f"ADDRESS: Always call the user '{_user_name}'."
+                 if _user_name
+                 else "ADDRESS: When speaking Turkish → always say \"efendim\". "
+                      "When speaking English → say \"sir\". Never mix languages.")
+        identity_ctx = (
+            f"[IDENTITY]\n"
+            f"Your name is {self._asst_name}. "
+            f"Always refer to yourself as {self._asst_name}.\n"
+            f"{_addr}\n\n"
+        )
+
+        parts = [time_ctx, identity_ctx]
         if mem_str:
             parts.append(mem_str)
         parts.append(sys_prompt)
@@ -861,24 +732,6 @@ class MehmetLive:
                 r = await loop.run_in_executor(None, lambda: open_app(parameters=args, response=None, player=self.ui))
                 result = r or f"Opened {args.get('app_name')}."
 
-            elif name == "blender_creator":
-                result = await loop.run_in_executor(
-                    None,
-                    lambda: blender_creator(args.get("generated_code", ""))
-                )
-
-            elif name == "image_to_3d_model":
-                img_path = args.get("image_path") or getattr(self.ui, "current_file", None)
-                result = await loop.run_in_executor(
-                    None,
-                    lambda: image_to_3d_model(
-                        image_path=img_path,
-                        resolution=int(args.get("resolution") or 96),
-                        height_scale=float(args.get("height_scale") or 0.6),
-                        solid=bool(args.get("solid", True)),
-                    )
-                )
-
             elif name == "weather_report":
                 r = await loop.run_in_executor(None, lambda: weather_action(parameters=args, player=self.ui))
                 result = r or "Weather delivered."
@@ -887,26 +740,9 @@ class MehmetLive:
                 r = await loop.run_in_executor(None, lambda: browser_control(parameters=args, player=self.ui))
                 result = r or "Done."
 
-            elif name == "davinci_macro":
-                from actions.davinci_macro import davinci_macro_action
-                result = davinci_macro_action(parameters=args, player=self.ui)    
-
             elif name == "file_controller":
                 r = await loop.run_in_executor(None, lambda: file_controller(parameters=args, player=self.ui))
                 result = r or "Done."
-
-            elif name == "cinematic_video":
-                def _run_video():
-                    try:
-                        r = cinematic_video(parameters=args, player=self.ui, speak=self.speak)
-                        first_line = r.split("\n")[0] if r else "Video tamamlandı."
-                        self.speak(first_line)
-                    except Exception as ex:
-                        err = f"Video hatası: {ex}"
-                        self.ui.write_log(err)
-                        self.speak("Video oluşturulurken bir hata oluştu.")
-                threading.Thread(target=_run_video, daemon=True).start()
-                result = "Video oluşturma başladı. Sahne sayısına göre birkaç dakika sürebilir."    
 
             elif name == "send_message":
                 r = await loop.run_in_executor(None, lambda: send_message(parameters=args, response=None, player=self.ui, session_memory=None))
@@ -921,13 +757,39 @@ class MehmetLive:
                 result = r or "Done."
 
             elif name == "screen_process":
-                threading.Thread(
-                    target=screen_process,
-                    kwargs={"parameters": args, "response": None,
-                            "player": self.ui, "session_memory": None},
-                    daemon=True
-                ).start()
-                result = "Vision module activated. Stay completely silent — vision module will speak directly."
+                import time as _t_mod
+                _now = _t_mod.monotonic()
+                _cooldown = 4.0  # seconds — covers echo window after speaking ends
+                if self._vision_busy or (_now - self._vision_last_time) < _cooldown:
+                    _wait = max(0, _cooldown - (_now - self._vision_last_time))
+                    print(f"[Vision] ⏳ Cooldown active ({_wait:.1f}s remaining) — ignoring duplicate call")
+                    result = "Vision is still processing the previous request. I will not call this again."
+                else:
+                    self._vision_busy      = True
+                    self._vision_last_time = _now
+                    angle     = args.get("angle", "screen").lower()
+                    user_text = args.get("text", "What do you see?")
+                    if angle == "camera":
+                        img_b, mime_t = await loop.run_in_executor(None, _capture_camera)
+                        self.ui.start_camera_stream()
+                        self._vision_cam_active = True
+                        print(f"[Vision] 📷 Camera: {len(img_b):,} bytes")
+                        _stall = "camera"
+                    else:
+                        img_b, mime_t = await loop.run_in_executor(None, _capture_screen)
+                        print(f"[Vision] 🖥️  Screen: {len(img_b):,} bytes")
+                        _stall = "screen"
+                    self._pending_vision = (img_b, mime_t, user_text, angle)
+                    result = (
+                        f"[VISION_ACTIVE] {_stall.capitalize()} captured. "
+                        f"Immediately say ONE short natural sentence in the user's own language, "
+                        f"telling them you are looking at their {_stall} right now. "
+                        f"Do NOT describe or guess content — the actual image arrives in the NEXT message."
+                    )
+
+            elif name == "close_camera":
+                self.ui.stop_camera_stream()
+                result = "Camera closed."
 
             elif name == "computer_settings":
                 r = await loop.run_in_executor(None, lambda: computer_settings(parameters=args, response=None, player=self.ui))
@@ -948,12 +810,12 @@ class MehmetLive:
             elif name == "web_search":
                 r = await loop.run_in_executor(None, lambda: web_search_action(parameters=args, player=self.ui))
                 result = r or "Done."
-                # Mirror substantial results to the on-screen content panel
-                if r and len(r) > 120:
-                    mode  = args.get("mode", "search").upper()
-                    query = args.get("query") or ", ".join(args.get("items", []))
-                    label = f"{mode} — {query[:38]}" if query else mode
-                    self.ui.show_content(label, r)
+                # Mirror results to the on-screen content panel
+                _mode = args.get("mode", "search")
+                if r and not r.startswith("No results") and not r.startswith("Search failed"):
+                    _query = args.get("query") or ", ".join(args.get("items", []))
+                    _label = f"{_mode.upper()} — {_query[:38]}" if _query else _mode.upper()
+                    self.ui.show_content(_label, r)
             elif name == "file_processor":
                 if not args.get("file_path") and self.ui.current_file:
                     args["file_path"] = self.ui.current_file
@@ -1016,8 +878,8 @@ class MehmetLive:
 
         def callback(indata, frames, time_info, status):
             with self._speaking_lock:
-                mehmet_speaking = self._is_speaking
-            if not mehmet_speaking and not self.ui.muted and not self._phone_active:
+                Mehmet_speaking = self._is_speaking
+            if not Mehmet_speaking and not self.ui.muted and not self._phone_active:
                 data = indata.tobytes()
                 loop.call_soon_threadsafe(
                     self.out_queue.put_nowait,
@@ -1048,26 +910,43 @@ class MehmetLive:
                 async for response in self.session.receive():
 
                     if response.data:
-                        if self._turn_done_event and self._turn_done_event.is_set():
-                            self._turn_done_event.clear()
-                        self.audio_in_queue.put_nowait(response.data)
+                        if self._interrupted:
+                            pass  # discard: interrupted
+                        else:
+                            if self._turn_done_event and self._turn_done_event.is_set():
+                                self._turn_done_event.clear()
+                            # Split into ~50 ms chunks so interrupt() stops audio within 50 ms
+                            # (24000 Hz × 2 bytes/sample × 0.05 s = 2400 bytes per slice)
+                            _audio_data = response.data
+                            _SLICE = 2400
+                            for _i in range(0, len(_audio_data), _SLICE):
+                                self.audio_in_queue.put_nowait(_audio_data[_i : _i + _SLICE])
 
                     if response.server_content:
                         sc = response.server_content
 
                         if sc.output_transcription and sc.output_transcription.text:
                             txt = _clean_transcript(sc.output_transcription.text)
-                            if txt:
+                            if txt and txt != (out_buf[-1] if out_buf else ""):
                                 out_buf.append(txt)
 
                         if sc.input_transcription and sc.input_transcription.text:
                             txt = _clean_transcript(sc.input_transcription.text)
                             if txt:
                                 in_buf.append(txt)
+                                self._last_user_speech = time.monotonic()
 
                         if sc.turn_complete:
                             if self._turn_done_event:
                                 self._turn_done_event.set()
+
+                            # If this turn_complete ends an interrupted response, clear the
+                            # flag and skip all further processing for that turn.
+                            if self._interrupted:
+                                self._interrupted = False
+                                in_buf  = []
+                                out_buf = []
+                                continue
 
                             full_in = " ".join(in_buf).strip()
                             if full_in:
@@ -1082,7 +961,7 @@ class MehmetLive:
 
                             full_out = " ".join(out_buf).strip()
                             if full_out:
-                                self.ui.write_log(f"Mehmet: {full_out}")
+                                self.ui.write_log(f"{self._asst_name}: {full_out}")
                                 if self._dashboard:
                                     asyncio.create_task(self._dashboard.broadcast({
                                         "type": "log", "speaker": "Mehmet",
@@ -1090,6 +969,37 @@ class MehmetLive:
                                         "ts": datetime.now().isoformat(),
                                     }))
                             out_buf = []
+
+                            # Vision injection: model finished tool-response turn → now send the image
+                            if self._pending_vision and self.session:
+                                import base64 as _b64
+                                img_b, mime_t, question, angle = self._pending_vision
+                                self._pending_vision = None
+                                b64 = _b64.b64encode(img_b).decode("ascii")
+                                print(f"[Vision] 📤 {len(img_b):,} bytes (angle={angle}) → main session")
+                                await self.session.send_client_content(
+                                    turns={"parts": [
+                                        {"inline_data": {"mime_type": mime_t, "data": b64}},
+                                        {"text": question},
+                                    ]},
+                                    turn_complete=True,
+                                )
+                                # Mark next turn_complete behaviour depending on angle
+                                if self._vision_cam_active:
+                                    # Camera: keep busy until Mehmet finishes speaking the answer
+                                    self._vision_cam_active    = False
+                                    self._vision_close_pending = True
+                                else:
+                                    # Screen-only: no camera to close; release busy flag now
+                                    self._vision_busy = False
+                            elif self._vision_close_pending:
+                                # This turn_complete IS the vision answer — close camera + release busy flag
+                                self._vision_close_pending = False
+                                self._vision_busy = False
+                                async def _cam_close():
+                                    await asyncio.sleep(2.0)
+                                    self.ui.stop_camera_stream()
+                                asyncio.create_task(_cam_close())
 
                     if response.tool_call:
                         fn_responses = []
@@ -1133,7 +1043,10 @@ class MehmetLive:
                         self._turn_done_event.clear()
                     continue
                 self.set_speaking(True)
-                await asyncio.to_thread(stream.write, chunk)
+                try:
+                    await asyncio.to_thread(stream.write, chunk)
+                except (RuntimeError, asyncio.CancelledError):
+                    break   # executor shutting down — exit cleanly
         except Exception as e:
             print(f"[Mehmet] ❌ Play: {e}")
             raise
@@ -1146,15 +1059,13 @@ class MehmetLive:
 
     async def _send_startup_briefing(self) -> None:
         """
-        Two-phase briefing for instant perceived response:
-          Phase 1 — immediate greeting (no tools, no fetch) → Mehmet speaks in <2s
-          Phase 2 — news fetched in background, injected after greeting finishes
+        Two-phase briefing optimized for speed:
+          Phase 1 — instant greeting (no tools) → speech starts in <1s
+          Phase 2 — news pre-fetched in a background thread while Phase 1 plays,
+                    delivered as ready text (no Gemini tool-call round-trip) and
+                    shown on the UI content panel. Waits for turn_complete event
+                    instead of a fixed sleep so there is no unnecessary gap.
         """
-        await asyncio.sleep(0.3)
-        if not self.session:
-            return
-
-        # ── memory ───────────────────────────────────────────────────────────
         memory   = load_memory()
         identity = memory.get("identity", {})
 
@@ -1164,111 +1075,87 @@ class MehmetLive:
 
         lang = _val("language")
         name = _val("name")
-
-        from datetime import datetime
         time_str = datetime.now().strftime("%H:%M")
 
-        # ── Phase 1: instant greeting — zero data needed ──────────────────────
-        p1_lines = [
-            "[STARTUP_GREETING] Greet the user immediately. Keep it to 1-2 short sentences.",
-            f"Current time: {time_str}.",
-            "- Say hello and mention the time naturally.",
-            "- Say you are checking today's headlines and will share them in a moment.",
-            "- Do NOT call any tools. Do NOT say [STARTUP_GREETING].",
-            "- Respond in "
-            + (f"language: {lang}." if lang else "the user's language (default: English)."),
-        ]
-        if name:
-            p1_lines.append(f"- Address the user as {name}.")
+        # Start fetching news immediately — runs in parallel while phase 1 plays
+        loop = asyncio.get_event_loop()
+        news_future = loop.run_in_executor(None, _fetch_news_sync, "top world news today")
+
+        await asyncio.sleep(0.3)
+        if not self.session:
+            return
+
+        # ── Phase 1: instant greeting ─────────────────────────────────────────
+        lang_clause = f" Respond in {lang}." if lang else ""
+        name_clause = f" Address the user as {name}." if name else ""
+        p1 = (
+            f"Greet the user, mention it is {time_str}, and say you are fetching today's news now. "
+            f"One short sentence only. Do not call any tools.{lang_clause}{name_clause}"
+        )
+
+        # Clear the turn-done event so we can wait for Phase 1 to finish
+        if self._turn_done_event:
+            self._turn_done_event.clear()
 
         await self.session.send_client_content(
-            turns={"parts": [{"text": '\n'.join(p1_lines)}]},
+            turns={"parts": [{"text": p1}]},
             turn_complete=True,
         )
         self.ui.write_log("SYS: Briefing phase 1 (greeting) sent.")
 
-        # ── Phase 2: fetch news in background, deliver after greeting plays ───
-        async def _guarded_news():
+        # ── Phase 2: fire as soon as Phase 1 audio is done ───────────────────
+        async def _deliver_news():
             try:
-                await self._briefing_news_phase(lang)
+                lang_str = f" Respond in {lang}." if lang else ""
+
+                # Wait for news fetch (already running) and Phase 1 turn-complete
+                # in parallel — whichever takes longer determines the wait time
+                news_done   = asyncio.wrap_future(news_future)
+                turn_waited = False
+                if self._turn_done_event:
+                    try:
+                        await asyncio.wait_for(self._turn_done_event.wait(), timeout=6.0)
+                        turn_waited = True
+                    except asyncio.TimeoutError:
+                        pass
+
+                # If turn_complete didn't fire (timeout), give a small buffer
+                if not turn_waited:
+                    await asyncio.sleep(1.0)
+
+                try:
+                    news_text = await asyncio.wait_for(news_done, timeout=4.0)
+                except Exception:
+                    news_text = ""
+
+                if not self.session:
+                    return
+
+                if news_text and len(news_text) > 60:
+                    # Show on UI content panel immediately
+                    self.ui.show_content("NEWS — top world news today", news_text)
+
+                    p2 = (
+                        f"[BRIEFING] Here are today's top news headlines:\n{news_text}\n\n"
+                        "Pick ONE headline, summarise it in one sentence, then say the full list "
+                        f"is displayed on screen. Do not call any tools.{lang_str}"
+                    )
+                else:
+                    p2 = (
+                        "News headlines could not be fetched right now. "
+                        f"Let the user know briefly.{lang_str}"
+                    )
+
+                await self.session.send_client_content(
+                    turns={"parts": [{"text": p2}]},
+                    turn_complete=True,
+                )
+                self.ui.write_log("SYS: Briefing phase 2 (news) sent.")
             except Exception as e:
                 print(f"[Briefing] Phase 2 error: {e}")
-                self.ui.write_log(f"SYS: Briefing news phase failed: {e}")
-        asyncio.create_task(_guarded_news())
+                self.ui.write_log(f"SYS: Briefing phase 2 failed: {e}")
 
-    async def _briefing_news_phase(self, lang: str) -> None:
-        """
-        Fetches headlines (DDG → Gemini fallback), shows them on screen,
-        then injects a short 2-headline summary into the Live session.
-        Waits enough time for the phase-1 greeting to finish playing first.
-        """
-        from actions.web_search import _ddg_search, _gemini_headlines
-
-        fetch_start           = asyncio.get_event_loop().time()
-        headlines: list[str]  = []
-        full_news             = ""
-
-        # 1) DDG — ~0.6 s when available
-        try:
-            results = await asyncio.wait_for(
-                asyncio.to_thread(_ddg_search, "world news today", 6),
-                timeout=4.0,
-            )
-            if results:
-                headlines = [r["title"] for r in results if r.get("title")][:6]
-                full_news = "\n\n".join(
-                    f"• {r.get('title','')}\n  {r.get('snippet','')}\n  {r.get('url','')}"
-                    for r in results
-                )
-        except Exception as e:
-            print(f"[Briefing] DDG: {e}")
-
-        # 2) Gemini grounded search — reliable fallback
-        if not headlines:
-            try:
-                headlines, full_news = await asyncio.wait_for(
-                    asyncio.to_thread(_gemini_headlines, 5),
-                    timeout=8.0,
-                )
-            except Exception as e:
-                print(f"[Briefing] Gemini headlines: {e}")
-
-        # Show full list on screen immediately when data arrives
-        if full_news:
-            self.ui.show_content("NEWS — latest headlines", full_news)
-
-        if not headlines or not self.session:
-            return
-
-        # Ensure the phase-1 greeting (≈ 3 s of speech) has finished before we speak again
-        elapsed       = asyncio.get_event_loop().time() - fetch_start
-        wait_more     = max(0.0, 3.5 - elapsed)
-        if wait_more > 0:
-            await asyncio.sleep(wait_more)
-
-        if not self.session:
-            return
-
-        headlines_text = "\n".join(f"{i+1}. {h}" for i, h in enumerate(headlines))
-        p2_lines = [
-            "[BRIEFING_NEWS] Today's headlines are already displayed on screen.",
-            "Data:",
-            headlines_text,
-            "",
-            "Voice rules:",
-            "- Mention ONLY 2 headlines — one short sentence each.",
-            "- Tell the user the full list is visible on screen.",
-            "- Ask if they need anything.",
-            "- Do NOT say [BRIEFING_NEWS].",
-            "- Respond in "
-            + (f"language: {lang}." if lang else "the user's language."),
-        ]
-
-        await self.session.send_client_content(
-            turns={"parts": [{"text": '\n'.join(p2_lines)}]},
-            turn_complete=True,
-        )
-        self.ui.write_log("SYS: Briefing phase 2 (news) sent.")
+        asyncio.create_task(_deliver_news())
 
     # ── System monitor ──────────────────────────────────────────────────────────
 
@@ -1285,6 +1172,41 @@ class MehmetLive:
                     )
                 except Exception as e:
                     print(f"[Monitor] ⚠️ Could not send alert: {e}")
+
+    # ── Proactive mode ──────────────────────────────────────────────────────────
+
+    async def _run_proactive_mode(self) -> None:
+        """
+        Background task: periodically checks if the user has been silent long enough,
+        then hands time + memory context to Gemini so it can decide what (if anything)
+        to say proactively. No hardcoded rules — Gemini makes the call.
+        """
+        while True:
+            await asyncio.sleep(60)   # evaluate once per minute
+
+            if not self.session:
+                continue
+
+            with self._speaking_lock:
+                speaking = self._is_speaking
+            if speaking:
+                continue
+
+            if not self._proactive.should_trigger(self._last_user_speech):
+                continue
+
+            self._proactive.mark_triggered()
+
+            try:
+                memory = await asyncio.to_thread(load_memory)
+                prompt = self._proactive.build_prompt(memory)
+                await self.session.send_client_content(
+                    turns={"parts": [{"text": prompt}]},
+                    turn_complete=True,
+                )
+                self.ui.write_log("SYS: Proactive check-in.")
+            except Exception as e:
+                print(f"[Proactive] ⚠️ {e}")
 
     # ── Phone audio relay ────────────────────────────────────────────────────────
 
@@ -1345,11 +1267,6 @@ class MehmetLive:
     async def run(self):
         self._loop = asyncio.get_event_loop()
 
-        client = genai.Client(
-            api_key=_get_api_key(),
-            http_options={"api_version": "v1beta"}
-        )
-
         # Start dashboard (optional — needs: pip install fastapi "uvicorn[standard]" cryptography)
         try:
             from dashboard.server import DashboardServer
@@ -1368,6 +1285,12 @@ class MehmetLive:
                 self.ui.set_state("THINKING")
                 config = self._build_config()
 
+                # Fresh client on every reconnect — avoids stale HTTP session state
+                client = genai.Client(
+                    api_key=_get_api_key(),
+                    http_options={"api_version": "v1beta"}
+                )
+
                 async with (
                     client.aio.live.connect(model=LIVE_MODEL, config=config) as session,
                     asyncio.TaskGroup() as tg,
@@ -1376,6 +1299,14 @@ class MehmetLive:
                     self.audio_in_queue   = asyncio.Queue()
                     self.out_queue        = asyncio.Queue(maxsize=200)
                     self._turn_done_event = asyncio.Event()
+
+                    # Reset transient state that must not carry over from a previous session
+                    self._pending_vision       = None
+                    self._vision_cam_active    = False
+                    self._vision_close_pending = False
+                    self._vision_busy          = False
+                    self._vision_last_time     = 0.0
+                    self._interrupted          = False
 
                     print("[Mehmet] Connected.")
                     self.ui.set_state("LISTENING")
@@ -1389,17 +1320,54 @@ class MehmetLive:
                     tg.create_task(self._receive_audio())
                     tg.create_task(self._play_audio())
                     tg.create_task(self._run_system_monitor())
+                    tg.create_task(self._run_proactive_mode())
                     if self._dashboard:
                         tg.create_task(self._relay_phone_audio())
 
-                    # Morning briefing — fires once per process launch
-                    if not self._briefing_sent:
+                    # Morning briefing — fires once per process launch (if enabled)
+                    if not self._briefing_sent and get_brief_enabled():
                         self._briefing_sent = True
                         tg.create_task(self._send_startup_briefing())
 
-            except Exception as e:
-                print(f"[Mehmet] Error: {e}")
+            except KeyboardInterrupt:
+                raise
+            except SystemExit:
+                raise
+            except BaseException as e:
+                # Catches both Exception and BaseExceptionGroup (Python 3.11+
+                # TaskGroup raises BaseExceptionGroup when tasks are cancelled
+                # externally, which `except Exception` would miss, letting the
+                # exception escape the while-loop and causing asyncio.run() to
+                # start shutdown — resulting in "executor after shutdown" errors).
+                err_str = str(e)
+                print(f"[Mehmet] Error ({type(e).__name__}): {e}")
                 traceback.print_exc()
+
+                # Invalid API key — stop hammering the API, prompt re-configuration
+                if "API key not valid" in err_str or "1007" in err_str:
+                    self.ui.write_log("ERR: API key invalid — please re-enter your key.")
+                    self.ui.set_state("SLEEPING")
+                    self.ui.prompt_reconfig()
+                    while not self.ui._win._ready:
+                        await asyncio.sleep(1)
+                    print("[Mehmet] New API key saved — reconnecting...")
+                    _conn_backoff = 3
+                    continue
+
+                # Network / timeout errors — log clearly and back off
+                is_net_err = any(k in err_str for k in (
+                    "TimeoutError", "timed out", "getaddrinfo", "CancelledError",
+                    "ConnectionRefusedError", "OSError", "Cannot connect",
+                ))
+                if is_net_err:
+                    _conn_backoff = min(getattr(self, "_conn_backoff", 3) * 2, 60)
+                    self._conn_backoff = _conn_backoff
+                    self.ui.write_log(
+                        f"NET: Bağlantı kurulamadı — {_conn_backoff}s sonra tekrar deneniyor. "
+                        "(VPN gerekiyor olabilir)"
+                    )
+                else:
+                    self._conn_backoff = 3
             finally:
                 self.session = None
 
@@ -1409,8 +1377,9 @@ class MehmetLive:
             if self._dashboard:
                 await self._dashboard.broadcast({"type": "status", "state": "sleeping"})
 
-            print("[Mehmet] Reconnecting in 3s...")
-            await asyncio.sleep(3)
+            delay = getattr(self, "_conn_backoff", 3)
+            print(f"[Mehmet] Reconnecting in {delay}s...")
+            await asyncio.sleep(delay)
 
 def main():
     ui = MehmetUI("face.png")

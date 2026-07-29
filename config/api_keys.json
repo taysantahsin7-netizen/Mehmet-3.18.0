@@ -1,4 +1,8 @@
 {
     "gemini_api_key": "AQ.Ab8RN6LLr6AGgwBnE4kDXr8nwoopyHDybNSPsm2vZWF5HFFu2Q",
-    "os_system": "windows"
+    "os_system": "windows",
+    "morning_brief_enabled": false,
+    "assistant_name": "Mehmet",
+    "user_name": "BaranT",
+    "ui_color": "#00ff21"
 }
