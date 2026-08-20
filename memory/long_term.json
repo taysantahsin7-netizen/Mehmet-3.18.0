@@ -10,9 +10,14 @@
       "value": "RDR2",
       "updated": "2026-06-29"
     }
-  },
+  }, 
   "projects": {},
-  "relationships": {},
+  "relationships": {
+      "location": {
+      "value": "Altınşehir, Ünsal Sk. No:28, 34494 Başakşehir/İstanbul, Türkiye",
+      "updated": "2026-06-29"
+    }
+  },
   "wishes": {
     "what_wants_most": {
       "value": "A good PC",

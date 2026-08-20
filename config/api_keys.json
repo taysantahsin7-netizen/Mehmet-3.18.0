@@ -3,6 +3,7 @@
     "os_system": "windows",
     "morning_brief_enabled": false,
     "assistant_name": "Mehmet",
-    "user_name": "BaranT",
-    "ui_color": "#00ff21"
+    "user_name": "BaranTi",
+    "ui_color": "#00ff21",
+    "camera_index": 0
 }

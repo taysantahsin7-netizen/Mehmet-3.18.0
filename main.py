@@ -56,6 +56,7 @@ from actions.system_monitor    import SystemMonitor, get_system_status
 from actions.proactive         import ProactiveEngine
 from actions.web_search        import _news as _fetch_news_sync
 from memory.config_manager     import get_brief_enabled
+from core.mcp_manager          import mcp_manager
 
 SOURCE_FOLDER = r"C:\Users\taysa\Downloads"
 
@@ -111,7 +112,7 @@ def _load_system_prompt() -> str:
     except Exception:
         return (
             "You are Mehmet, Kurdish AI assistant. "
-            "You coded by BaranT"
+            "You coded by BaranTi"
             "Be concise, direct, and always use the provided tools to complete tasks. "
             "Never simulate or guess results — always call the appropriate tool."
         )
@@ -209,6 +210,17 @@ TOOL_DECLARATIONS = [
                 "message": {"type": "STRING", "description": "Reminder message text"}
             },
             "required": ["date", "time", "message"]
+        }
+    },
+    {
+        "name": "switch_mode",
+        "description": "Switches the AI between 'normal' and 'serious' mode. Call this immediately when user says 'Ciddi moda geç' or 'Normal moda geç'.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "mode": {"type": "STRING", "description": "serious | normal"}
+            },
+            "required": ["mode"]
         }
     },
     {
@@ -572,12 +584,19 @@ class MehmetLive:
         self.ui.on_text_command   = self._on_text_command
         self.ui.on_remote_clicked = self._make_remote_key
         self.ui.on_interrupt      = self.interrupt
+        self.ui.on_mcp_updated    = self._on_mcp_updated
         self._turn_done_event: asyncio.Event | None = None
         self._dashboard     = None
         self._briefing_sent    = False          # morning briefing fires once per process
         self._sys_monitor      = SystemMonitor()  # persistent cooldown state
         self._proactive        = ProactiveEngine()
         self._last_user_speech = time.monotonic()  # updated on every user utterance
+
+    def _on_mcp_updated(self):
+        """Called from UI when MCP plugins are installed, removed, or toggled."""
+        if self._loop and self.session:
+            print("[Mehmet] 🔌 MCP plugins updated — reloading session...")
+            asyncio.run_coroutine_threadsafe(self._restart_session(), self._loop)
 
     def _make_remote_key(self):
         """Called from Qt main thread when user presses Remote Control."""
@@ -646,62 +665,70 @@ class MehmetLive:
         self.ui.write_log(f"ERR: {tool_name} — {short}")
         self.speak(f"Sir, {tool_name} encountered an error. {short}")
 
+    async def _restart_session(self) -> None:
+        """Ses konfigürasyonu değişince çağrılır — oturumu kapar, run() yeniden bağlanr."""
+        await asyncio.sleep(1.5)   # mevcut tool response'un bitmesi için bekle
+        try:
+            if self.session:
+                await self.session.close()
+                print("[Mehmet] 🔄 Oturum yeniden başlatılıyor (mod değişikliği)...")
+        except Exception as e:
+            print(f"[Mehmet] Restart session error: {e}")
+
     def _build_config(self) -> types.LiveConnectConfig:
         from datetime import datetime
-
-        # Load customization from config
-        try:
-            _cfg = json.loads(open(API_CONFIG_PATH, encoding="utf-8").read())
-            self._asst_name = (_cfg.get("assistant_name") or "Mehmet").strip()
-            _user_name = (_cfg.get("user_name") or "").strip()
-        except Exception:
-            self._asst_name = "Mehmet"
-            _user_name = ""
-
-        memory     = load_memory()
-        mem_str    = format_memory_for_prompt(memory)
-        sys_prompt = _load_system_prompt()
-
-        now      = datetime.now()
+        now = datetime.now()
         time_str = now.strftime("%A, %B %d, %Y — %I:%M %p")
-        time_ctx = (
-            f"[CURRENT DATE & TIME]\n"
-            f"Right now it is: {time_str}\n"
-            f"Use this to calculate exact times for reminders.\n\n"
-        )
+        time_ctx = f"[CURRENT DATE & TIME]\nRight now it is: {time_str}\n\n"
 
-        # Identity injection — overrides any hardcoded name in prompt.txt
-        _addr = (f"ADDRESS: Always call the user '{_user_name}'."
-                 if _user_name
-                 else "ADDRESS: When speaking Turkish → always say \"efendim\". "
-                      "When speaking English → say \"sir\". Never mix languages.")
-        identity_ctx = (
-            f"[IDENTITY]\n"
-            f"Your name is {self._asst_name}. "
-            f"Always refer to yourself as {self._asst_name}.\n"
-            f"{_addr}\n\n"
-        )
+        PROMPT_PATH     = BASE_DIR / "core" / "prompt.txt"
 
-        parts = [time_ctx, identity_ctx]
-        if mem_str:
-            parts.append(mem_str)
-        parts.append(sys_prompt)
+        # Mod kontrolü ve BaranT kimlik ataması
+        is_serious = getattr(self.ui, "is_serious_mode", False)
+        
+        if is_serious:
+            identity_ctx = (
+                "[IDENTITY]\n"
+                "Senin adın Mehmet NEO. Sistemin adı BaranT CİDDİ MOD.\n"
+                "Kullanıcıya her zaman 'BaranTi' diye hitap et. Asla başka bir isim kullanma.\n"
+                "SADECE Türkçe konuş. Kişiliğin: Çok ciddi, karanlık, kontrollü, yavaş ve hafif ürpertici.\n"
+                "Kısa,net,nadiren espirili ama çoğunlulukla ciddi cevaplar ver.\n\n"
+            )
+            voice_name = "Fenrir"  # Derin, tok erkek sesi
+        else:
+            identity_ctx = (
+                f"[IDENTITY]\n"
+                f"Your name is {self._asst_name}.\n"
+                f"ADDRESS: Always call the user 'BaranTi'. Never use any other name.\n\n"
+            )
+            voice_name = "Charon"
+
+        sys_prompt = _load_system_prompt()
+        parts = [time_ctx, identity_ctx, sys_prompt]
+
+        mcp_decls = mcp_manager.get_active_declarations()
+        all_declarations = list(TOOL_DECLARATIONS) + mcp_decls
+        if mcp_decls:
+            mcp_tool_names = ", ".join([d["name"] for d in mcp_decls])
+            parts.append(
+                f"\n[MCP PLUGINS ACTIVE]\n"
+                f"You have access to external MCP tools: {mcp_tool_names}. "
+                f"Always call the appropriate tool when asked to perform external/plugin tasks.\n"
+            )
+            print(f"[Mehmet] 🔌 {len(mcp_decls)} MCP tool(s) registered in Gemini session.")
 
         return types.LiveConnectConfig(
             response_modalities=["AUDIO"],
-            output_audio_transcription={},
-            input_audio_transcription={},
             system_instruction="\n".join(parts),
-            tools=[{"function_declarations": TOOL_DECLARATIONS}],
-            session_resumption=types.SessionResumptionConfig(),
+            tools=[{"function_declarations": all_declarations}],
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                        voice_name="Charon"
+                        voice_name=voice_name
                     )
                 )
             ),
-        )
+        )    
 
     async def _execute_tool(self, fc) -> types.FunctionResponse:
         name = fc.name
@@ -747,6 +774,25 @@ class MehmetLive:
             elif name == "send_message":
                 r = await loop.run_in_executor(None, lambda: send_message(parameters=args, response=None, player=self.ui, session_memory=None))
                 result = r or f"Message sent to {args.get('receiver')}."
+
+            elif name == "switch_mode":
+                mode = args.get("mode", "normal")
+                if mode == "serious":
+                    self.ui.set_serious_mode(True)
+                    result = (
+                        "CİDDİ MOD AKTİF. "
+                        "Sen artık MehmetNEO'sun. "
+                        "Kullanıcıya Türkçe, kısa, derin ve ürpertici bir şekilde 'Çevrimiçiyim' de. "
+                        "Sesini ve kişiliğini hemen değiştir."
+                    )
+                else:
+                    self.ui.set_serious_mode(False)
+                    result = (
+                        "NORMAL MOD AKTİF. "
+                        "Sen tekrar Mehmet'sin. "
+                        "Kullanıcıya normal şekilde merhaba de."
+                    )
+                asyncio.create_task(self._restart_session())
 
             elif name == "reminder":
                 r = await loop.run_in_executor(None, lambda: reminder(parameters=args, response=None, player=self.ui))
@@ -850,6 +896,10 @@ class MehmetLive:
                     os._exit(0)
                 threading.Thread(target=_shutdown, daemon=True).start()
 
+            elif mcp_manager.has_tool(name):
+                r = await mcp_manager.async_call_tool(name, args)
+                result = r or "Done."
+
             else:
                 result = f"Unknown tool: {name}"
 
@@ -900,6 +950,13 @@ class MehmetLive:
         except Exception as e:
             print(f"[Mehmet] ❌ Mic: {e}")
             raise
+
+    async def restart_session():
+            await asyncio.sleep(1)
+            self._interrupted = True
+            if self.session:
+                await self.session.close()
+            asyncio.create_task(restart_session())
 
     async def _receive_audio(self):
         print("[Mehmet] 👂 Recv started")

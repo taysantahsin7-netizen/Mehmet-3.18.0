@@ -25,7 +25,7 @@ from PyQt6.QtCore import (
 from PyQt6.QtGui import (
     QBrush, QColor, QConicalGradient, QDragEnterEvent, QDropEvent, QFont,
     QFontDatabase, QKeySequence, QLinearGradient, QPainter, QPainterPath,
-    QPen, QPixmap, QRadialGradient, QShortcut,
+    QPen, QPixmap, QRadialGradient, QShortcut, QMovie,
 )
 from PyQt6.QtWidgets import (
     QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
@@ -93,6 +93,155 @@ _PALETTE_DEFAULTS: dict[str, str] = {k: getattr(C, k) for k in _HUE_LINKED}
 
 DEFAULT_UI_COLOR = _PALETTE_DEFAULTS["PRI"]
 
+class SeriousModeCanvas(QWidget):
+    """Ciddi Mod Canvas: Sol tarafta 3D Siber Küre/Dünya, Ortada Doctor Harley Sawyer GIF'i, Sağda Türkçe Sistem Monitörü"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
+        
+        # GIF Yükleme (Harley Sawyer)
+        gif_path = str(BASE_DIR / "assets" / "sawyer.gif")
+        self.movie = QMovie(gif_path)
+        if self.movie.isValid():
+            self.movie.frameChanged.connect(self.update)
+            self.movie.start()
+        
+        self.angle_x = 0.0
+        self.angle_y = 0.0
+        self.state   = "Dinliyor"
+        self.speaking = False
+        
+        self._sys_log = [
+            "SİSTEM BAŞLATILDI...",
+            "KİŞİLİK: MehmetNEO",
+            "ŞİFRELEME: AES-256 (AKTİF)",
+            "GÜVENLİK PROTOKOLÜ: NEO",
+        ]
+        
+        # 3D Dünya Küre Noktaları (Latitude & Longitude)
+        self.globe_nodes = []
+        radius = 1.0
+        for lat in range(-60, 70, 20):
+            r_lat = math.radians(lat)
+            y = radius * math.sin(r_lat)
+            rc = radius * math.cos(r_lat)
+            for lon in range(0, 360, 24):
+                r_lon = math.radians(lon)
+                x = rc * math.cos(r_lon)
+                z = rc * math.sin(r_lon)
+                self.globe_nodes.append((x, y, z))
+
+        self._tmr = QTimer(self)
+        self._tmr.timeout.connect(self._step)
+        self._tmr.start(30)
+
+    def _step(self):
+        speed = 0.04 if self.speaking else 0.015
+        self.angle_x += speed * 0.7
+        self.angle_y += speed
+        
+        if random.random() < 0.06:
+            pkt = f"0x{random.randint(4096, 65535):04X} : PKT_GELDİ"
+            self._sys_log.append(pkt)
+            if len(self._sys_log) > 16:
+                self._sys_log.pop(0)
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        W, H = self.width(), self.height()
+        
+        # Siyah / Koyu Kırmızı Matris Arka Planı
+        p.fillRect(self.rect(), QColor(6, 1, 4))
+        
+        # ── Sol Taraf: 3D Siber Küre / Dünya ─────────────────────────────────
+        cx, cy = W * 0.18, H * 0.5
+        globe_r = min(W, H) * 0.18
+        
+        # 3D Rotasyon Matrisi ve İzdüşüm
+        proj_nodes = []
+        cos_x, sin_x = math.cos(self.angle_x), math.sin(self.angle_x)
+        cos_y, sin_y = math.cos(self.angle_y), math.sin(self.angle_y)
+
+        for x, y, z in self.globe_nodes:
+            # X Ekseni Rotasyonu
+            y1 = y * cos_x - z * sin_x
+            z1 = y * sin_x + z * cos_x
+            # Y Ekseni Rotasyonu
+            x2 = x * cos_y + z1 * sin_y
+            z2 = -x * sin_y + z1 * cos_y
+            
+            # Perspektif
+            fov = 300
+            scale = fov / (fov + z2 * globe_r)
+            px_x = cx + x2 * globe_r * scale
+            px_y = cy + y1 * globe_r * scale
+            proj_nodes.append((px_x, px_y, z2))
+
+        # Enlem/Boylam Çizgileri ve Düğümler
+        p.setPen(QPen(QColor("#ff003c"), 1.2, Qt.PenStyle.SolidLine))
+        num_nodes = len(proj_nodes)
+        for i in range(num_nodes):
+            x1, y1, z1 = proj_nodes[i]
+            if z1 < 0: # Ön yüzey
+                # Komşu düğümleri bağla
+                if (i + 1) % 15 != 0 and i + 1 < num_nodes:
+                    x2, y2, z2 = proj_nodes[i + 1]
+                    if z2 < 0:
+                        p.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+
+                # Nokta çiz
+                dot_color = QColor("#00ff41") if i % 3 == 0 else QColor("#ff2255")
+                p.setBrush(QBrush(dot_color))
+                p.drawEllipse(QPointF(x1, y1), 2.5, 2.5)
+
+        # 3D Dünya Başlığı
+        p.setFont(QFont("Consolas", 9, QFont.Weight.Bold))
+        p.setPen(QColor("#ff003c"))
+        p.drawText(int(cx - 70), int(cy + globe_r + 25), "◈ 3D SİBER DÜNYA")
+
+        # ── Ortada: Harley Sawyer GIF ve Çerçevesi ───────────────────────────
+        center_x, center_y = int(W / 2), int(H / 2)
+        gif_size = 230
+        
+        # GIF Çerçevesi (Glow Kırmızı Kutu)
+        frame_rect = QRectF(center_x - gif_size/2 - 6, center_y - gif_size/2 - 6, gif_size + 12, gif_size + 12)
+        p.setPen(QPen(QColor("#ff003c"), 2))
+        p.setBrush(QBrush(QColor(15, 0, 5, 200)))
+        p.drawRoundedRect(frame_rect, 8, 8)
+        
+        if self.movie.currentPixmap() and not self.movie.currentPixmap().isNull():
+            pix = self.movie.currentPixmap().scaled(gif_size, gif_size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            p.drawPixmap(int(center_x - pix.width()/2), int(center_y - pix.height()/2), pix)
+        else:
+            p.setPen(QColor("#ff003c"))
+            p.drawText(frame_rect, Qt.AlignmentFlag.AlignCenter, "[MehmetNEO]")
+
+        # Harley Sawyer İsim Başlığı
+        p.setFont(QFont("Consolas", 11, QFont.Weight.Bold))
+        p.setPen(QColor("#ffffff"))
+        p.drawText(QRectF(center_x - 150, center_y + gif_size/2 + 12, 300, 24), Qt.AlignmentFlag.AlignCenter, "MEHMET NEO")
+        p.setFont(QFont("Consolas", 8))
+        p.setPen(QColor("#ff3355"))
+        p.drawText(QRectF(center_x - 150, center_y + gif_size/2 + 32, 300, 20), Qt.AlignmentFlag.AlignCenter, "CİDDİ MOD // MODEL: GLM 5.2")
+
+        # ── Sağ Taraf: Canlı Türkçe Sistem ve Akış Günlüğü ─────────────────
+        p.setFont(QFont("Consolas", 9, QFont.Weight.Bold))
+        p.setPen(QColor("#00ff41"))
+        p.drawText(int(W * 0.76), int(H * 0.18), "◈ CANLI SİSTEM AKIŞI")
+
+        p.setFont(QFont("Consolas", 8))
+        p.setPen(QColor("#00ff88"))
+        y_offset = H * 0.23
+        for log in self._sys_log:
+            p.drawText(QRectF(W * 0.76, y_offset, W * 0.22, 18), Qt.AlignmentFlag.AlignLeft, log)
+            y_offset += 19
+
+        # CRT Scanline Efekti
+        p.setPen(QColor(0, 0, 0, 80))
+        for y in range(0, H, 3):
+            p.drawLine(0, y, W, y)
 
 def apply_ui_accent(accent_hex: str) -> bool:
     """
@@ -561,18 +710,18 @@ class HudCanvas(QWidget):
         # status text
         sy = cy + fw * 0.40
         if self.muted:
-            txt, col = "⊘  MUTED",     qcol(C.MUTED_C)
+            txt, col = "⊘  SUSTURULDU",     qcol(C.MUTED_C)
         elif self.speaking:
-            txt, col = "●  SPEAKING",  qcol(C.ACC)
-        elif self.state == "THINKING":
+            txt, col = "●  KONUŞUYOR",  qcol(C.ACC)
+        elif self.state == "DÜŞÜNÜYOR":
             sym = "◈" if self._blink else "◇"
-            txt, col = f"{sym}  THINKING",   qcol(C.ACC2)
-        elif self.state == "PROCESSING":
+            txt, col = f"{sym}  DÜŞÜNÜYOR",   qcol(C.ACC2)
+        elif self.state == "İŞLENİYOR":
             sym = "▷" if self._blink else "▶"
-            txt, col = f"{sym}  PROCESSING", qcol(C.ACC2)
-        elif self.state == "LISTENING":
+            txt, col = f"{sym}  İŞLENİYOR", qcol(C.ACC2)
+        elif self.state == "DİNLİYOR":
             sym = "●" if self._blink else "○"
-            txt, col = f"{sym}  LISTENING",  qcol(C.GREEN)
+            txt, col = f"{sym}  DİNLİYOR",  qcol(C.GREEN)
         else:
             sym = "●" if self._blink else "○"
             txt, col = f"{sym}  {self.state}", qcol(C.PRI)
@@ -1726,6 +1875,526 @@ class RemoteKeyOverlay(QWidget):
         self.closed.emit()
 
 
+class McpToolsDialog(QWidget):
+    """MCP Eklentisine ait araçların şemalarını ve açıklamalarını gösteren modal pencere."""
+
+    closed = pyqtSignal()
+    _OW, _OH = 520, 430
+
+    def __init__(self, plugin_name: str, tools: list[dict], parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(f"""
+            McpToolsDialog {{
+                background: rgba(0, 8, 16, 250);
+                border: 1px solid {C.PRI};
+                border-radius: 8px;
+            }}
+        """)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 14, 16, 14)
+        lay.setSpacing(8)
+
+        # Header
+        hdr = QHBoxLayout()
+        title = QLabel(f"◈  ARAÇLAR: {plugin_name.upper()}")
+        title.setFont(QFont("Courier New", 10, QFont.Weight.Bold))
+        title.setStyleSheet(f"color: {C.PRI}; background: transparent;")
+        hdr.addWidget(title)
+        hdr.addStretch()
+
+        x_btn = QPushButton("✕")
+        x_btn.setFixedSize(20, 20)
+        x_btn.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
+        x_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        x_btn.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent; border: none;")
+        x_btn.clicked.connect(self._do_close)
+        hdr.addWidget(x_btn)
+        lay.addLayout(hdr)
+
+        sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet(f"color: {C.BORDER}; margin: 2px 0;")
+        lay.addWidget(sep)
+
+        # Tools list scroll area
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet(f"""
+            QScrollArea {{ background: transparent; border: none; }}
+            QScrollBar:vertical {{ background: {C.BG}; width: 6px; border: none; }}
+            QScrollBar::handle:vertical {{ background: {C.BORDER_B}; border-radius: 3px; min-height: 16px; }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; border: none; }}
+        """)
+
+        container = QWidget()
+        container.setStyleSheet("background: transparent;")
+        c_lay = QVBoxLayout(container)
+        c_lay.setContentsMargins(0, 0, 4, 0)
+        c_lay.setSpacing(8)
+
+        if not tools:
+            no_lbl = QLabel("Bu eklentide kayıtlı araç bulunamadı.\n(Bağlantı test edilmemiş veya sunucu araç sağlamıyor)")
+            no_lbl.setFont(QFont("Courier New", 8))
+            no_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            no_lbl.setStyleSheet(f"color: {C.TEXT_DIM}; padding: 20px 0;")
+            c_lay.addWidget(no_lbl)
+        else:
+            for t in tools:
+                card = QWidget()
+                card.setStyleSheet(f"""
+                    background: {C.PANEL2};
+                    border: 1px solid {C.BORDER_A};
+                    border-radius: 4px;
+                    padding: 6px;
+                """)
+                card_lay = QVBoxLayout(card)
+                card_lay.setContentsMargins(8, 6, 8, 6)
+                card_lay.setSpacing(4)
+
+                t_name = QLabel(f"⚡ {t.get('name')}")
+                t_name.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
+                t_name.setStyleSheet(f"color: {C.WHITE}; background: transparent;")
+                card_lay.addWidget(t_name)
+
+                desc_txt = t.get('description', '')
+                if desc_txt:
+                    t_desc = QLabel(desc_txt)
+                    t_desc.setFont(QFont("Courier New", 8))
+                    t_desc.setWordWrap(True)
+                    t_desc.setStyleSheet(f"color: {C.TEXT_MED}; background: transparent;")
+                    card_lay.addWidget(t_desc)
+
+                params = t.get('parameters', {}).get('properties', {})
+                if params:
+                    params_txt = "Parametreler:\n" + "\n".join([f" • {k} ({v.get('type','').lower()}): {v.get('description','')}" for k, v in params.items()])
+                    t_params = QLabel(params_txt)
+                    t_params.setFont(QFont("Courier New", 7))
+                    t_params.setWordWrap(True)
+                    t_params.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent; padding-top: 2px;")
+                    card_lay.addWidget(t_params)
+
+                c_lay.addWidget(card)
+
+        c_lay.addStretch()
+        scroll.setWidget(container)
+        lay.addWidget(scroll)
+
+        close_btn = QPushButton("KAPAT")
+        close_btn.setFixedHeight(28)
+        close_btn.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        close_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; color: {C.TEXT_MED};
+                border: 1px solid {C.BORDER}; border-radius: 3px;
+            }}
+            QPushButton:hover {{ color: {C.PRI}; border-color: {C.PRI_DIM}; }}
+        """)
+        close_btn.clicked.connect(self._do_close)
+        lay.addWidget(close_btn)
+
+    def _do_close(self):
+        self.hide()
+        self.closed.emit()
+
+
+class McpOverlay(QWidget):
+    """
+    Floating overlay for managing MCP (Model Context Protocol) plugins.
+    Supports GitHub URLs, npx/py commands, SSE endpoints, and Claude MCP configs.
+    """
+
+    closed = pyqtSignal()
+    plugins_updated = pyqtSignal()
+    _install_status_sig = pyqtSignal(bool, str)
+
+    _OW, _OH = 660, 530
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(f"""
+            McpOverlay {{
+                background: rgba(0, 6, 12, 248);
+                border: 1px solid {C.BORDER_B};
+                border-radius: 8px;
+            }}
+        """)
+        self._tools_dialog: McpToolsDialog | None = None
+        self._install_status_sig.connect(self._on_install_finished)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 14, 18, 14)
+        lay.setSpacing(8)
+
+        # Header Row
+        hdr = QHBoxLayout(); hdr.setSpacing(6)
+        icon_lbl = QLabel("◈  MCP EKLENTİ YÖNETİCİSİ")
+        icon_lbl.setFont(QFont("Courier New", 11, QFont.Weight.Bold))
+        icon_lbl.setStyleSheet(f"color: {C.PRI}; background: transparent;")
+        hdr.addWidget(icon_lbl)
+        hdr.addStretch()
+
+        x_btn = QPushButton("✕")
+        x_btn.setFixedSize(22, 22)
+        x_btn.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
+        x_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        x_btn.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent; border: none;")
+        x_btn.clicked.connect(self._do_close)
+        hdr.addWidget(x_btn)
+        lay.addLayout(hdr)
+
+        sub_lbl = QLabel("GitHub linki, npx/py komutu, SSE URL veya Claude/MCP JSON'u yapıştırarak dilediğiniz eklentiyi yükleyin.")
+        sub_lbl.setFont(QFont("Courier New", 7))
+        sub_lbl.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
+        lay.addWidget(sub_lbl)
+
+        sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet(f"color: {C.BORDER}; margin: 2px 0;")
+        lay.addWidget(sep)
+
+        # Add section
+        add_box = QWidget()
+        add_box.setStyleSheet(f"background: {C.PANEL}; border: 1px solid {C.BORDER}; border-radius: 4px; padding: 6px;")
+        add_lay = QVBoxLayout(add_box)
+        add_lay.setContentsMargins(8, 6, 8, 6)
+        add_lay.setSpacing(6)
+
+        in_hdr = QLabel("YENİ EKLENTİ YÜKLE / BAĞLA")
+        in_hdr.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
+        in_hdr.setStyleSheet(f"color: {C.TEXT_MED}; background: transparent;")
+        add_lay.addWidget(in_hdr)
+
+        in_row = QHBoxLayout(); in_row.setSpacing(6)
+        self._url_input = QLineEdit()
+        self._url_input.setPlaceholderText("GitHub URL, npx/py komutu, SSE URL veya JSON girin...")
+        self._url_input.setFont(QFont("Courier New", 8))
+        self._url_input.setFixedHeight(28)
+        self._url_input.setStyleSheet(f"""
+            QLineEdit {{
+                background: #000d14; color: {C.WHITE};
+                border: 1px solid {C.BORDER}; border-radius: 3px; padding: 2px 6px;
+            }}
+            QLineEdit:focus {{ border: 1px solid {C.PRI}; }}
+        """)
+        in_row.addWidget(self._url_input, stretch=3)
+
+        self._name_input = QLineEdit()
+        self._name_input.setPlaceholderText("İsim (İsteğe bağlı)")
+        self._name_input.setFont(QFont("Courier New", 8))
+        self._name_input.setFixedHeight(28)
+        self._name_input.setStyleSheet(f"""
+            QLineEdit {{
+                background: #000d14; color: {C.WHITE};
+                border: 1px solid {C.BORDER}; border-radius: 3px; padding: 2px 6px;
+            }}
+            QLineEdit:focus {{ border: 1px solid {C.PRI}; }}
+        """)
+        in_row.addWidget(self._name_input, stretch=1)
+
+        self._install_btn = QPushButton("▸ YÜKLE")
+        self._install_btn.setFixedHeight(28)
+        self._install_btn.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        self._install_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._install_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: #001f2e; color: {C.PRI};
+                border: 1px solid {C.PRI_DIM}; border-radius: 3px; padding: 0 10px;
+            }}
+            QPushButton:hover {{ background: {C.PRI_GHO}; border-color: {C.PRI}; }}
+        """)
+        self._install_btn.clicked.connect(self._start_install)
+        in_row.addWidget(self._install_btn)
+        add_lay.addLayout(in_row)
+
+        self._status_lbl = QLabel("")
+        self._status_lbl.setFont(QFont("Courier New", 7))
+        self._status_lbl.setStyleSheet("background: transparent;")
+        self._status_lbl.hide()
+        add_lay.addWidget(self._status_lbl)
+
+        lay.addWidget(add_box)
+
+        # List Section
+        list_hdr = QHBoxLayout()
+        list_title = QLabel("YÜKLÜ MCP EKLENTİLERİ")
+        list_title.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        list_title.setStyleSheet(f"color: {C.TEXT_MED}; background: transparent;")
+        list_hdr.addWidget(list_title)
+        list_hdr.addStretch()
+
+        ref_btn = QPushButton("🔄 YENİLE")
+        ref_btn.setFont(QFont("Courier New", 7))
+        ref_btn.setFixedHeight(20)
+        ref_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        ref_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; color: {C.TEXT_DIM};
+                border: 1px solid {C.BORDER}; border-radius: 2px; padding: 0 6px;
+            }}
+            QPushButton:hover {{ color: {C.TEXT}; border-color: {C.BORDER_B}; }}
+        """)
+        ref_btn.clicked.connect(self._refresh_list)
+        list_hdr.addWidget(ref_btn)
+        lay.addLayout(list_hdr)
+
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setStyleSheet(f"""
+            QScrollArea {{ background: transparent; border: 1px solid {C.BORDER}; border-radius: 4px; }}
+            QScrollBar:vertical {{ background: {C.BG}; width: 6px; border: none; }}
+            QScrollBar::handle:vertical {{ background: {C.BORDER_B}; border-radius: 3px; min-height: 16px; }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; border: none; }}
+        """)
+
+        self._list_container = QWidget()
+        self._list_container.setStyleSheet("background: transparent;")
+        self._list_lay = QVBoxLayout(self._list_container)
+        self._list_lay.setContentsMargins(6, 6, 6, 6)
+        self._list_lay.setSpacing(6)
+        self._scroll.setWidget(self._list_container)
+        lay.addWidget(self._scroll, stretch=1)
+
+        # Footer Row
+        ftr = QHBoxLayout()
+        info_lbl = QLabel("Aktif MCP eklentilerinin araçları Gemini Live oturumuna otomatik aktarılır.")
+        info_lbl.setFont(QFont("Courier New", 7))
+        info_lbl.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
+        ftr.addWidget(info_lbl)
+        ftr.addStretch()
+
+        done_btn = QPushButton("TAMAM")
+        done_btn.setFixedHeight(26)
+        done_btn.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        done_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        done_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {C.PANEL}; color: {C.PRI};
+                border: 1px solid {C.PRI_DIM}; border-radius: 3px; padding: 0 14px;
+            }}
+            QPushButton:hover {{ background: {C.PRI_GHO}; border-color: {C.PRI}; }}
+        """)
+        done_btn.clicked.connect(self._do_close)
+        ftr.addWidget(done_btn)
+        lay.addLayout(ftr)
+
+        self._refresh_list()
+
+    def _start_install(self):
+        raw_text = self._url_input.text().strip()
+        custom_name = self._name_input.text().strip()
+        if not raw_text:
+            self._set_status(False, "Lütfen bir link, komut veya JSON girin.")
+            return
+
+        self._install_btn.setEnabled(False)
+        self._set_status(True, "⏳ Eklenti indiriliyor / yapılandırılıyor, lütfen bekleyin...", is_busy=True)
+
+        def _worker():
+            from core.mcp_manager import mcp_manager
+            ok, msg, _ = mcp_manager.install_from_source(raw_text, custom_name)
+            self._install_status_sig.emit(ok, msg)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_install_finished(self, ok: bool, msg: str):
+        self._install_btn.setEnabled(True)
+        if ok:
+            self._url_input.clear()
+            self._name_input.clear()
+            self._set_status(True, f"✓ {msg}")
+            self._refresh_list()
+            self.plugins_updated.emit()
+        else:
+            self._set_status(False, f"✕ Hata: {msg}")
+
+    def _set_status(self, ok: bool, text: str, is_busy: bool = False):
+        self._status_lbl.setText(text)
+        if is_busy:
+            color = C.ACC2
+        elif ok:
+            color = C.GREEN
+        else:
+            color = C.RED
+        self._status_lbl.setStyleSheet(f"color: {color}; background: transparent; padding-top: 2px;")
+        self._status_lbl.show()
+
+    def _refresh_list(self):
+        while self._list_lay.count():
+            item = self._list_lay.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+
+        from core.mcp_manager import mcp_manager
+        plugins = mcp_manager.plugins
+
+        if not plugins:
+            empty_lbl = QLabel("Henüz yüklü MCP eklentisi bulunmuyor.\nYukarıdaki alana bir GitHub linki veya npx/py komutu yapıştırarak ekleyin.")
+            empty_lbl.setFont(QFont("Courier New", 8))
+            empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            empty_lbl.setStyleSheet(f"color: {C.TEXT_DIM}; padding: 30px 0;")
+            self._list_lay.addWidget(empty_lbl)
+            self._list_lay.addStretch()
+            return
+
+        for p in plugins:
+            card = self._create_plugin_card(p)
+            self._list_lay.addWidget(card)
+
+        self._list_lay.addStretch()
+
+    def _create_plugin_card(self, p: dict) -> QWidget:
+        card = QWidget()
+        card.setStyleSheet(f"""
+            background: {C.PANEL2};
+            border: 1px solid {C.BORDER_A};
+            border-radius: 4px;
+        """)
+        c_lay = QVBoxLayout(card)
+        c_lay.setContentsMargins(10, 8, 10, 8)
+        c_lay.setSpacing(5)
+
+        # Row 1: Title, Badges, Toggle
+        top_row = QHBoxLayout(); top_row.setSpacing(6)
+
+        p_name = QLabel(p.get("name", "MCP Plugin"))
+        p_name.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
+        p_name.setStyleSheet(f"color: {C.WHITE}; background: transparent;")
+        top_row.addWidget(p_name)
+
+        # Transport Badge
+        trans = p.get("transport", "stdio").upper()
+        t_badge = QLabel(f"[{trans}]")
+        t_badge.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
+        badge_col = C.ACC2 if trans == "SSE" else C.PRI
+        t_badge.setStyleSheet(f"color: {badge_col}; background: #00121e; border: 1px solid {C.BORDER}; border-radius: 2px; padding: 1px 4px;")
+        top_row.addWidget(t_badge)
+
+        # Tool Count Badge
+        tool_count = len(p.get("tools", []))
+        tool_badge = QLabel(f"{tool_count} Araç")
+        tool_badge.setFont(QFont("Courier New", 7))
+        tool_badge.setStyleSheet(f"color: {C.TEXT_MED}; background: #001a14; border: 1px solid {C.BORDER}; border-radius: 2px; padding: 1px 4px;")
+        top_row.addWidget(tool_badge)
+
+        top_row.addStretch()
+
+        # Toggle Button
+        is_on = p.get("enabled", True)
+        tog_btn = QPushButton("AKTİF" if is_on else "PASİF")
+        tog_btn.setFixedSize(56, 20)
+        tog_btn.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
+        tog_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        if is_on:
+            tog_btn.setStyleSheet(f"background: #002612; color: {C.GREEN}; border: 1px solid {C.GREEN_D}; border-radius: 3px;")
+        else:
+            tog_btn.setStyleSheet(f"background: #1a0006; color: {C.MUTED_C}; border: 1px solid {C.BORDER}; border-radius: 3px;")
+        tog_btn.clicked.connect(lambda _, pid=p.get("id"), state=is_on: self._toggle_plugin(pid, not state))
+        top_row.addWidget(tog_btn)
+        c_lay.addLayout(top_row)
+
+        # Row 2: Source info
+        src_text = p.get("source") or (p.get("command", "") + " " + " ".join(p.get("args", []))) or p.get("url", "")
+        if len(src_text) > 75:
+            src_text = src_text[:72] + "..."
+        src_lbl = QLabel(src_text)
+        src_lbl.setFont(QFont("Courier New", 7))
+        src_lbl.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
+        c_lay.addWidget(src_lbl)
+
+        # Row 3: Action Buttons
+        act_row = QHBoxLayout(); act_row.setSpacing(6)
+        act_row.addStretch()
+
+        tools_btn = QPushButton("🔍 ARAÇLAR")
+        tools_btn.setFixedHeight(22)
+        tools_btn.setFont(QFont("Courier New", 7))
+        tools_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        tools_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; color: {C.TEXT_MED};
+                border: 1px solid {C.BORDER}; border-radius: 2px; padding: 0 6px;
+            }}
+            QPushButton:hover {{ color: {C.PRI}; border-color: {C.PRI_DIM}; }}
+        """)
+        tools_btn.clicked.connect(lambda _, pl=p: self._view_tools(pl))
+        act_row.addWidget(tools_btn)
+
+        test_btn = QPushButton("🔄 TEST ET")
+        test_btn.setFixedHeight(22)
+        test_btn.setFont(QFont("Courier New", 7))
+        test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        test_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; color: {C.TEXT_MED};
+                border: 1px solid {C.BORDER}; border-radius: 2px; padding: 0 6px;
+            }}
+            QPushButton:hover {{ color: {C.ACC2}; border-color: {C.ACC2}; }}
+        """)
+        test_btn.clicked.connect(lambda _, pl=p: self._test_plugin(pl))
+        act_row.addWidget(test_btn)
+
+        del_btn = QPushButton("🗑 SİL")
+        del_btn.setFixedHeight(22)
+        del_btn.setFont(QFont("Courier New", 7))
+        del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        del_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; color: {C.MUTED_C};
+                border: 1px solid {C.BORDER}; border-radius: 2px; padding: 0 6px;
+            }}
+            QPushButton:hover {{ background: #26000c; border-color: {C.RED}; }}
+        """)
+        del_btn.clicked.connect(lambda _, pid=p.get("id"): self._delete_plugin(pid))
+        act_row.addWidget(del_btn)
+
+        c_lay.addLayout(act_row)
+        return card
+
+    def _toggle_plugin(self, plugin_id: str, new_state: bool):
+        from core.mcp_manager import mcp_manager
+        mcp_manager.toggle_plugin(plugin_id, new_state)
+        self._refresh_list()
+        self.plugins_updated.emit()
+
+    def _delete_plugin(self, plugin_id: str):
+        from core.mcp_manager import mcp_manager
+        mcp_manager.remove_plugin(plugin_id)
+        self._refresh_list()
+        self.plugins_updated.emit()
+
+    def _view_tools(self, plugin: dict):
+        if self._tools_dialog:
+            self._tools_dialog.hide()
+        dialog = McpToolsDialog(plugin.get("name", "Eklenti"), plugin.get("tools", []), parent=self)
+        dw, dh = McpToolsDialog._OW, McpToolsDialog._OH
+        dialog.setGeometry(
+            (self.width() - dw) // 2,
+            (self.height() - dh) // 2,
+            dw, dh
+        )
+        dialog.show()
+        self._tools_dialog = dialog
+
+    def _test_plugin(self, plugin: dict):
+        self._set_status(True, f"⏳ '{plugin.get('name')}' test ediliyor...", is_busy=True)
+
+        def _worker():
+            from core.mcp_manager import mcp_manager
+            tools, err = mcp_manager.sync_fetch_tools(plugin)
+            if err:
+                self._install_status_sig.emit(False, f"Test başarısız: {err}")
+            else:
+                self._install_status_sig.emit(True, f"Test başarılı! {len(tools)} araç aktif.")
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _do_close(self):
+        self.hide()
+        self.closed.emit()
+
+
 class MainWindow(QMainWindow):
     _log_sig        = pyqtSignal(str)
     _state_sig      = pyqtSignal(str)
@@ -1735,10 +2404,12 @@ class MainWindow(QMainWindow):
     _cam_stream_sig = pyqtSignal(bool)       # True=start live stream, False=stop
     _cam_frame_sig  = pyqtSignal(bytes)      # live camera frame → HUD area
     _clipboard_sig  = pyqtSignal(str)        # clipboard text changed (thread-safe)
+    _serious_sig    = pyqtSignal(bool)       # toggle serious mode (thread-safe)
 
     def __init__(self, face_path: str):
         super().__init__()
         self._face_path = face_path
+        self.is_serious_mode = False
 
         # Load customization from config
         _cfg = _read_full_config()
@@ -1763,10 +2434,12 @@ class MainWindow(QMainWindow):
         self.on_text_command   = None
         self.on_remote_clicked = None   # callable: () -> (url, key) | None
         self.on_interrupt      = None   # callable: () -> None — stop Mehmet mid-speech
+        self.on_mcp_updated    = None   # callable: () -> None — reload tools when plugins change
         self._muted            = False
         self._current_file: str | None = None
         self._remote_overlay: RemoteKeyOverlay | None = None
         self._customize_overlay: CustomizeOverlay | None = None
+        self._mcp_overlay: McpOverlay | None = None
 
         central = QWidget()
         central.setStyleSheet(f"background: {C.BG};")
@@ -1797,12 +2470,12 @@ class MainWindow(QMainWindow):
         _cam_v.setSpacing(0)
         _cam_hdr = QHBoxLayout()
         _cam_hdr.setContentsMargins(8, 5, 8, 5)
-        _cam_title = QLabel("◈  CAMERA FEED")
+        _cam_title = QLabel("◈  KAMERA ALANI")
         _cam_title.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
         _cam_title.setStyleSheet(f"color: {C.PRI}; background: transparent;")
         _cam_hdr.addWidget(_cam_title)
         _cam_hdr.addStretch()
-        _cam_x = QPushButton("✕  CLOSE")
+        _cam_x = QPushButton("✕  KAPAT")
         _cam_x.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
         _cam_x.setCursor(Qt.CursorShape.PointingHandCursor)
         _cam_x.setStyleSheet(f"""
@@ -1823,10 +2496,14 @@ class MainWindow(QMainWindow):
         )
         _cam_v.addWidget(self._cam_live_lbl, stretch=1)
 
-        # Stack: 0 = animated HUD, 1 = live camera
+        # Serious Mode Canvas (3D World + Harley Sawyer GIF)
+        self.serious_canvas = SeriousModeCanvas()
+
+        # Stack: 0 = animated HUD, 1 = live camera, 2 = serious mode canvas
         self._hud_cam_stack = QStackedWidget()
         self._hud_cam_stack.addWidget(self.hud)
         self._hud_cam_stack.addWidget(_cam_cont)
+        self._hud_cam_stack.addWidget(self.serious_canvas)
 
         self._center_split = QSplitter(Qt.Orientation.Vertical)
         self._center_split.setStyleSheet(f"""
@@ -1876,6 +2553,7 @@ class MainWindow(QMainWindow):
         self._cam_stream_sig.connect(self._on_cam_stream)
         self._cam_frame_sig.connect(self._on_cam_frame)
         self._clipboard_sig.connect(self._show_clipboard_panel)
+        self._serious_sig.connect(self._on_serious_mode_toggle)
         self._cam_stop = threading.Event()
 
         # Camera preview overlay (child of central widget, positioned in resizeEvent)
@@ -1898,6 +2576,39 @@ class MainWindow(QMainWindow):
         sc_intr = QShortcut(QKeySequence("Escape"), self)
         sc_intr.activated.connect(self._do_interrupt)
 
+    def _on_serious_mode_toggle(self, is_serious: bool):
+        """Slot — ciddi mod/normal mod geçişini ana thread'de uygular."""
+        self.is_serious_mode = is_serious
+        old_palette = current_palette()
+        if is_serious:
+            apply_ui_accent("#ff003c")
+            new_palette = current_palette()
+            retheme_all_widgets(old_palette, new_palette)
+            self.setWindowTitle("MehmetNEO (CİDDİ MOD) — GLM 5.2")
+            self._title_lbl.setText("MehmetNEO")
+            self._sub_lbl.setText("CİDDİ MOD // MODEL: GLM 5.2")
+            self._title_lbl.setStyleSheet(f"color: {C.PRI}; background: transparent;")
+            self._sub_lbl.setStyleSheet(f"color: {C.PRI_DIM}; background: transparent;")
+            self._hud_cam_stack.setCurrentIndex(2)
+            self._log.append_log("SYS: ═══════════════════════════════════")
+            self._log.append_log("SYS: CİDDİ MOD AKTİF")
+            self._log.append_log("SYS: MODEL: GLM 5.2")
+            self._log.append_log("SYS: KİŞİLİK: MehmetNEO")
+            self._log.append_log("SYS: ═══════════════════════════════════")
+            QApplication.beep()
+        else:
+            apply_ui_accent(DEFAULT_UI_COLOR)
+            new_palette = current_palette()
+            retheme_all_widgets(old_palette, new_palette)
+            _disp = self._assistant_name.upper()
+            self.setWindowTitle(f"{_disp} — Sürüm 3.21.0")
+            self._title_lbl.setText(_disp)
+            self._sub_lbl.setText("PC için AI")
+            self._title_lbl.setStyleSheet(f"color: {C.PRI}; background: transparent;")
+            self._sub_lbl.setStyleSheet(f"color: {C.PRI_DIM}; background: transparent;")
+            self._hud_cam_stack.setCurrentIndex(0)
+            self._log.append_log("SYS: NORMAL MOD AKTİF. Mehmet AI çevrimiçi.")
+
     def _show_camera_frame(self, img_bytes: bytes):
         """Slot — display camera preview overlay (main thread)."""
         self._cam_preview.show_frame(img_bytes)
@@ -1915,7 +2626,8 @@ class MainWindow(QMainWindow):
         if start:
             self._hud_cam_stack.setCurrentIndex(1)
         else:
-            self._hud_cam_stack.setCurrentIndex(0)
+            # Ciddi mod aktifse HUD yerine ciddi mod canvas'a dön
+            self._hud_cam_stack.setCurrentIndex(2 if self.is_serious_mode else 0)
             self._cam_live_lbl.clear()
 
     def _on_cam_frame(self, data: bytes) -> None:
@@ -2455,7 +3167,7 @@ class MainWindow(QMainWindow):
             l.setStyleSheet(f"color: {color}; background: transparent;")
             return l
 
-        lay.addWidget(_badge("Sürüm 3.21.0", C.PRI_DIM))
+        lay.addWidget(_badge("Sürüm 3.22.0", C.PRI_DIM))
         lay.addSpacing(8)
         self._drawer_btn = QPushButton("⚙")
         self._drawer_btn.setFixedSize(26, 26)
@@ -2482,7 +3194,7 @@ class MainWindow(QMainWindow):
         self._title_lbl.setFont(QFont("Courier New", 17, QFont.Weight.Bold))
         self._title_lbl.setStyleSheet(f"color: {C.PRI}; background: transparent;")
         mid.addWidget(self._title_lbl)
-        _sub_text = ("PC için AI(Çünkü kimse microsoftun copilotunu yararlı bulmuyor.:D)"
+        _sub_text = ("KİŞİSEL AI"
                      if _disp in ("Mehmet", "MEHMET")
                      else "Personal AI Assistant")
         self._sub_lbl = QLabel(_sub_text)
@@ -2519,7 +3231,7 @@ class MainWindow(QMainWindow):
         lay.setContentsMargins(8, 10, 8, 10)
         lay.setSpacing(6)
 
-        hdr = QLabel("◈ SYS MONITOR")
+        hdr = QLabel("◈ SİSTEM MONİTÖRÜ")
         hdr.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
         hdr.setStyleSheet(f"color: {C.PRI}; background: transparent; "
                           f"border-bottom: 1px solid {C.BORDER}; padding-bottom: 4px;")
@@ -2596,7 +3308,7 @@ class MainWindow(QMainWindow):
             l.setStyleSheet(f"color: {C.TEXT_MED}; background: transparent;")
             return l
 
-        lay.addWidget(_sec("ACTIVITY LOG"))
+        lay.addWidget(_sec("HAREKET GÜNLÜĞÜ"))
         self._log = LogWidget()
         lay.addWidget(self._log, stretch=1)
 
@@ -2609,7 +3321,7 @@ class MainWindow(QMainWindow):
         self._drop_zone.file_selected.connect(self._on_file_selected)
         lay.addWidget(self._drop_zone)
 
-        self._file_hint = QLabel("No file loaded — drop or click above to upload")
+        self._file_hint = QLabel("Dosya yüklenmedi — yüklemek için tıkla yada sürükle")
         self._file_hint.setFont(QFont("Courier New", 7))
         self._file_hint.setStyleSheet(f"color: {C.TEXT_MED}; background: transparent;")
         self._file_hint.setWordWrap(True)
@@ -2619,10 +3331,10 @@ class MainWindow(QMainWindow):
         sep2.setStyleSheet(f"color: {C.BORDER}; margin: 2px 0;")
         lay.addWidget(sep2)
 
-        lay.addWidget(_sec("COMMAND INPUT"))
+        lay.addWidget(_sec("KOMUT GİRİN"))
         lay.addLayout(self._build_input_row())
 
-        self._interrupt_btn = QPushButton("✋  INTERRUPT  [ESC]")
+        self._interrupt_btn = QPushButton("✋  SUSTUR  [ESC]")
         self._interrupt_btn.setFixedHeight(34)
         self._interrupt_btn.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
         self._interrupt_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -2641,7 +3353,7 @@ class MainWindow(QMainWindow):
         self._interrupt_btn.clicked.connect(self._do_interrupt)
         lay.addWidget(self._interrupt_btn)
 
-        self._mute_btn = QPushButton("🎙  MICROPHONE ACTIVE")
+        self._mute_btn = QPushButton("🎙  MİKROFON AKTİF")
         self._mute_btn.setFixedHeight(30)
         self._mute_btn.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
         self._mute_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -2737,6 +3449,14 @@ class MainWindow(QMainWindow):
         self._brief_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._brief_btn.clicked.connect(self._toggle_brief)
         lay.addWidget(self._brief_btn)
+
+        mcp_btn = QPushButton("🔌  MCP EKLENTİLERİ")
+        mcp_btn.setFixedHeight(26)
+        mcp_btn.setFont(QFont("Courier New", 7))
+        mcp_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        mcp_btn.setStyleSheet(_BTN_STYLE_DIM)
+        mcp_btn.clicked.connect(self._open_mcp_manager)
+        lay.addWidget(mcp_btn)
 
         w.adjustSize()
         return w
@@ -2904,9 +3624,9 @@ class MainWindow(QMainWindow):
             l.setStyleSheet(f"color: {color}; background: transparent;")
             return l
 
-        lay.addWidget(_fl("[F4] Mute  ·  [F11] Fullscreen"))
+        lay.addWidget(_fl("[F4] Sustur  ·  [F11] Tam Ekran"))
         lay.addStretch()
-        lay.addWidget(_fl("By FatihMakes", C.PRI_DIM))
+        lay.addWidget(_fl("BaranT Tarafından", C.PRI_DIM))
         return w
 
     def _on_file_selected(self, path: str):
@@ -3157,6 +3877,33 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self._log.append_log(f"ERR: Config save failed — {e}")
 
+    # ── MCP Plugins ──────────────────────────────────────────────────────────────
+
+    def _open_mcp_manager(self):
+        if self._mcp_overlay:
+            self._mcp_overlay.hide()
+        cw = self.centralWidget()
+        ov = McpOverlay(parent=cw)
+        ow, oh = McpOverlay._OW, McpOverlay._OH
+        ow = min(ow, cw.width() - 16)
+        oh = min(oh, cw.height() - 16)
+        ov.setGeometry(
+            (cw.width()  - ow) // 2,
+            (cw.height() - oh) // 2,
+            ow, oh,
+        )
+        ov.closed.connect(lambda: setattr(self, '_mcp_overlay', None))
+        ov.plugins_updated.connect(self._on_mcp_plugins_updated)
+        ov.show()
+        self._mcp_overlay = ov
+
+    def _on_mcp_plugins_updated(self):
+        from core.mcp_manager import mcp_manager
+        active_count = len(mcp_manager.get_active_plugins())
+        self._log.append_log(f"SYS: MCP Eklentileri güncellendi ({active_count} aktif eklenti).")
+        if hasattr(self, 'on_mcp_updated') and callable(self.on_mcp_updated):
+            self.on_mcp_updated()
+
     # ── Clipboard intelligence ───────────────────────────────────────────────────
 
     def _on_clipboard_changed(self):
@@ -3195,15 +3942,15 @@ class MainWindow(QMainWindow):
         self.hud.muted = self._muted
         self._style_mute_btn()
         if self._muted:
-            self._apply_state("MUTED")
-            self._log.append_log("SYS: Microphone muted.")
+            self._apply_state("Susturuldu")
+            self._log.append_log("SYS: Mikrofon Kapalı.")
         else:
-            self._apply_state("LISTENING")
-            self._log.append_log("SYS: Microphone active.")
+            self._apply_state("Dinliyor")
+            self._log.append_log("SYS: Mikrofon aktif.")
 
     def _style_mute_btn(self):
         if self._muted:
-            self._mute_btn.setText("🔇  MICROPHONE MUTED")
+            self._mute_btn.setText("🔇  MİKROFON SESSİZDE")
             self._mute_btn.setStyleSheet(f"""
                 QPushButton {{
                     background: #140006; color: {C.MUTED_C};
@@ -3211,7 +3958,7 @@ class MainWindow(QMainWindow):
                 }}
             """)
         else:
-            self._mute_btn.setText("🎙  MICROPHONE ACTIVE")
+            self._mute_btn.setText("🎙  MİKROFON AKTİF")
             self._mute_btn.setStyleSheet(f"""
                 QPushButton {{
                     background: #00140a; color: {C.GREEN};
@@ -3321,6 +4068,14 @@ class MehmetUI:
     def on_interrupt(self, cb):
         self._win.on_interrupt = cb
 
+    @property
+    def on_mcp_updated(self):
+        return self._win.on_mcp_updated
+
+    @on_mcp_updated.setter
+    def on_mcp_updated(self, cb):
+        self._win.on_mcp_updated = cb
+
     def notify_phone_connected(self) -> None:
         self._win.notify_phone_connected()
 
@@ -3333,6 +4088,14 @@ class MehmetUI:
     def wait_for_api_key(self):
         while not self._win._ready:
             time.sleep(0.1)
+
+    @property
+    def is_serious_mode(self) -> bool:
+        return self._win.is_serious_mode
+
+    def set_serious_mode(self, enable: bool = True):
+        """Thread-safe: ciddi mod/normal mod geçişini ana thread'de uygular."""
+        self._win._serious_sig.emit(enable)
 
     def show_content(self, title: str, text: str):
         """Thread-safe: display content in the panel below the HUD."""

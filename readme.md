@@ -1,5 +1,5 @@
-# ⚙️ MARK XLIX
-### The Ultimate Cross-Platform Personal AI Assistant — By FatihMakes
+# ⚙️ Sürüm 3.22.0
+### The Ultimate Cross-Platform Personal AI Assistant — By BaranT
 
 > 📺 **[Watch the full setup video on YouTube](https://youtu.be/CiGdcIlnXb8))**
 
@@ -9,7 +9,7 @@ A real-time voice AI that can hear, see, understand, and control your computer �
 
 ## ✨ Overview
 
-MARK XLIX deepens the personal assistant foundation. Rather than adding more tools, this build focused on making the assistant truly *yours*: it starts with your computer, learns your name, and pays attention to what you're doing. The goal before the plugin era begins is a core that feels alive — not just reactive.
+Sürüm 3.22.0 deepens the personal assistant foundation. Rather than adding more tools, this build focused on making the assistant truly *yours*: it starts with your computer, learns your name, and pays attention to what you're doing. The goal before the plugin era begins is a core that feels alive — not just reactive.
 
 ---
 
@@ -44,7 +44,7 @@ MARK XLIX deepens the personal assistant foundation. Rather than adding more too
 
 ---
 
-## 🆕 What's New in XLIX
+## 🆕 What's New in 3.22.0
 
 ### ⚡ Auto-Start on Boot
 The assistant now registers itself with the operating system's startup system. One click in the UI toggles it on or off. On Windows, it writes to the registry using `pythonw.exe` so no console window ever appears. On macOS it installs a LaunchAgent plist; on Linux a `.desktop` autostart entry. The button reflects the current state every time the app launches.
@@ -69,7 +69,7 @@ The morning briefing can now be turned on or off with one click from the setting
 | Mark | Focus |
 |---|---|
 | **XLVIII** | Instant interrupt · parallel news · two-phase briefing · exponential backoff · vision cooldown |
-| **XLIX** | Auto-start · clipboard intelligence · assistant customization |
+| **3.22.0** | Auto-start · clipboard intelligence · assistant customization |
 | **L** | Wake word · proactive system 2.0 · session memory / daily continuity |
 | **LI+** | Plugin system · email · quiz mode · calorie counter · and more |
 
@@ -78,8 +78,8 @@ The morning briefing can now be turned on or off with one click from the setting
 ## ⚡ Quick Start
 
 ```bash
-git clone https://github.com/FatihMakes/Mark-XLIX.git
-cd Mark-XLIX
+git clone https://github.com/BaranT/Mark-3.22.0.git
+cd Mark-3.22.0
 pip install -r requirements.txt
 python main.py
 ```
@@ -102,7 +102,7 @@ python main.py
 ## 🗂️ Project Structure
 
 ```
-Mark XLIX/
+Mark 3.22.0/
 ├── main.py                  # Core loop — Gemini Live session, audio I/O, tool dispatch
 ├── ui.py                    # PyQt6 HUD — waveform, log panel, interrupt button, camera feed
 ├── setup.py                 # First-run configuration wizard
@@ -147,7 +147,3 @@ Licensed under **[Creative Commons BY-NC 4.0](https://creativecommons.org/licens
 Engineered by a developer building a real-world JARVIS-style assistant.
 ⭐ **Star the repository to support the journey to Mark 100.**
 
-| Platform | Link |
-| --- | --- |
-| YouTube | [@FatihMakes](https://www.youtube.com/@FatihMakes) |
-| Instagram | [@fatihmakes](https://www.instagram.com/fatihmakes) |

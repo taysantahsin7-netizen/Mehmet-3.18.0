@@ -218,11 +218,11 @@ def check_model_available(log: Callable | None = None) -> bool:
         return True   # Ollama might still be starting up; non-blocking
 
 
-def get_llm_settings() -> tuple[str, str]:
+def get_llm_settings(override_model: str | None = None) -> tuple[str, str]:
     """Returns (base_url, model_name)."""
     cfg   = _load_config()
     url   = cfg.get("llm_url",   _DEFAULTS["llm_url"]).rstrip("/")
-    model = cfg.get("llm_model", _DEFAULTS["llm_model"])
+    model = override_model or cfg.get("llm_model", _DEFAULTS["llm_model"])
     return url, model
 
 
@@ -230,6 +230,7 @@ def call_llm(
     messages: list,
     tools:    list | None = None,
     timeout:  int = 120,
+    model_override: str | None = None,
 ) -> dict:
     """
     Non-streaming chat request.  Routes to Ollama or OpenAI-compatible backend.
@@ -237,7 +238,7 @@ def call_llm(
     Returns:
         {"content": str, "tool_calls": list}
     """
-    url, model = get_llm_settings()
+    url, model = get_llm_settings(model_override)
     provider   = get_llm_provider()
 
     if provider == "openai":
