@@ -29,3 +29,32 @@ win10toast; sys_platform == "win32"
 pywinauto; sys_platform == "win32"
 pywin32; sys_platform == "win32"
 qrcode[pil]
+
+# ── MCP istemcisi (mcp_manager, mcp_unity) ──
+mcp
+
+# ── Arama (web_search.py ddgs import'u kullanıyor) ──
+ddgs
+
+# ── GPU / donanım izleme ──
+nvidia-ml-py
+wmi; sys_platform == "win32"
+
+# ── Dosya / doküman işleme (file_processor) ──
+pandas
+openpyxl
+pdfplumber
+PyPDF2
+python-docx
+
+# ── Ses işleme + TTS/STT motorları ──
+edge-tts
+gTTS
+# kokoro 0.9.x yalnızca Python 3.10–3.12'yi destekler; 3.13+ üzerinde edge-tts kullanılır
+kokoro>=0.9; python_version < "3.13"
+soundfile
+miniaudio
+pydub
+faster-whisper
+vosk
+torch

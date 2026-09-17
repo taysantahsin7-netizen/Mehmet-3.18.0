@@ -35,19 +35,47 @@ _CORE: list[tuple[str, str]] = [
     ("youtube_transcript_api", "youtube-transcript-api"),
     # NAVİGATÖR (dahili tarayıcı) çekirdeği
     ("PyQt6.QtWebEngineWidgets", "PyQt6-WebEngine"),
+    # ── requirements.txt ile senkron blok ──────────────────────────────
+    ("PyQt6",              "PyQt6"),
+    # yapay zekâ çekirdeği (Gemini Live)
+    ("google.genai",       "google-genai"),
+    # MCP istemcisi (mcp_manager, mcp_unity)
+    ("mcp",                "mcp"),
+    # web_search.py yeni ddgs import'u
+    ("ddgs",               "ddgs"),
+    # GPU / donanım izleme
+    ("pynvml",             "nvidia-ml-py"),
+    # doküman işleme (file_processor)
+    ("pandas",             "pandas"),
+    ("openpyxl",           "openpyxl"),
+    ("pdfplumber",         "pdfplumber"),
+    ("PyPDF2",             "PyPDF2"),
+    ("docx",               "python-docx"),
+    # telefon paneli (dashboard server)
+    ("fastapi",            "fastapi"),
+    ("uvicorn",            "uvicorn"),
+    ("cryptography",       "cryptography"),
+    ("multipart",          "python-multipart"),
+    # QR / medya yardımcıları
+    ("qrcode",             "qrcode"),
+    ("gtts",               "gTTS"),
+    ("pydub",              "pydub"),
 ]
 
-# Windows-only (pywinauto, pycaw, win10toast, comtypes)
+# Windows-only (pywinauto, pycaw, win10toast, comtypes, soundcard, wmi)
 _WINDOWS: list[tuple[str, str]] = [
     ("comtypes",   "comtypes"),
     ("pycaw",      "pycaw"),
     ("win10toast", "win10toast"),
     ("pywinauto",  "pywinauto"),
+    ("soundcard",  "SoundCard"),   # izleme modu WASAPI loopback
+    ("wmi",        "wmi"),          # system_monitor donanım sorguları
 ]
 
 # STT engine packages
 _STT: dict[str, list[tuple[str, str]]] = {
-    "whisper": [("faster_whisper", "faster-whisper")],
+    # torch: faster_whisper GPU tespiti + kokoro — BÜYÜK (~2.5 GB CUDA)
+    "whisper": [("faster_whisper", "faster-whisper"), ("torch", "torch")],
     "vosk":    [("vosk",           "vosk")],
 }
 
@@ -55,7 +83,9 @@ _STT: dict[str, list[tuple[str, str]]] = {
 _TTS: dict[str, list[tuple[str, str]]] = {
     "edgetts":    [("edge_tts", "edge-tts")],
     # kokoro>=0.9 dropped AlbertModel/AutoModel from transformers — version pin is critical
-    "kokoro":     [("kokoro",   "kokoro>=0.9"), ("soundfile", "soundfile")],
+    # NOT: kokoro 0.9.x yalnızca Python 3.10-3.12'yi destekler (3.13+ için edgetts kullan)
+    "kokoro":     [("kokoro",   "kokoro>=0.9"), ("soundfile", "soundfile"),
+                   ("torch",    "torch")],
     "elevenlabs": [],   # uses only requests, already in core
 }
 
@@ -63,8 +93,13 @@ _TTS: dict[str, list[tuple[str, str]]] = {
 # ── Helpers ───────────────────────────────────────────────────────────────
 
 def _available(module: str) -> bool:
-    """Return True if the module can be imported (no actual import)."""
-    return importlib.util.find_spec(module) is not None
+    """Return True if the module can be imported (no actual import).
+    Dotted names (e.g. "google.genai") raise ModuleNotFoundError when the
+    parent package is missing entirely — treat that as "not available"."""
+    try:
+        return importlib.util.find_spec(module) is not None
+    except Exception:
+        return False
 
 
 def _pip(package: str, log: Callable | None = None) -> bool:
