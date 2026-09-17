@@ -20,18 +20,35 @@ else:
 
 from PyQt6.QtCore import (
     QEasingCurve, QMimeData, QObject, QPointF, QRectF, QSize, Qt,
+    QPropertyAnimation, QSequentialAnimationGroup,
     QTimer, QUrl, pyqtSignal,
 )
 from PyQt6.QtGui import (
     QBrush, QColor, QConicalGradient, QDragEnterEvent, QDropEvent, QFont,
     QFontDatabase, QKeySequence, QLinearGradient, QPainter, QPainterPath,
-    QPen, QPixmap, QRadialGradient, QShortcut, QMovie,
+    QPen, QPixmap, QRadialGradient, QShortcut,
 )
 from PyQt6.QtWidgets import (
     QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QPushButton, QScrollArea, QSizePolicy, QSplitter,
     QStackedWidget, QTextEdit, QVBoxLayout, QWidget, QProgressBar,
+    QGraphicsOpacityEffect,
 )
+
+# NAVİGATÖR çekirdeği (dahili tarayıcı): QApplication ÖNCE içe alınmalı,
+# aksi halde QtWebEngine çalışmayı reddeder. Paket yoksa panel zarif düşer.
+try:
+    # VPN aktarma katmanı: Chromium her zaman yerel relay'e bağlanır;
+    # VPN aç/kapa bu katmanın hedefini değiştirir (yeniden başlatma yok).
+    from browser.vpn import ensure_relay_flags
+    ensure_relay_flags()
+    from PyQt6.QtWebEngineWidgets import QWebEngineView  # noqa: F401
+    # Chromium, paylaşılan GL bağlamı ister — QApplication kurulmadan ÖNCE:
+    QApplication.setAttribute(
+        Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
+    _WEBENGINE_OK = True
+except Exception:
+    _WEBENGINE_OK = False
 
 def _base_dir() -> Path:
     if getattr(sys, "frozen", False):
@@ -51,36 +68,36 @@ def _read_full_config() -> dict:
         return {}
 
 
-_DEFAULT_W, _DEFAULT_H = 980, 700
-_MIN_W,     _MIN_H     = 820, 580
-_LEFT_W  = 148
-_RIGHT_W = 340
+_DEFAULT_W, _DEFAULT_H = 1240, 780
+_MIN_W,     _MIN_H     = 1040, 660
+_LEFT_W  = 188
+_RIGHT_W = 360
 
 _OS = platform.system()  # "Windows" | "Darwin" | "Linux"
 
 
 class C:
-    BG        = "#00060a"
-    PANEL     = "#010d14"
-    PANEL2    = "#010f18"
-    BORDER    = "#0d3347"
-    BORDER_B  = "#1a5c7a"
-    BORDER_A  = "#0f4060"
-    PRI       = "#00d4ff"
-    PRI_DIM   = "#007a99"
-    PRI_GHO   = "#001f2e"
+    BG        = "#070502"
+    PANEL     = "#120d04"
+    PANEL2    = "#171105"
+    BORDER    = "#3d2f10"
+    BORDER_B  = "#6b5220"
+    BORDER_A  = "#523d16"
+    PRI       = "#ffb300"
+    PRI_DIM   = "#8f6a10"
+    PRI_GHO   = "#241a04"
     ACC       = "#ff6b00"
-    ACC2      = "#ffcc00"
-    GREEN     = "#00ff88"
-    GREEN_D   = "#00aa55"
-    RED       = "#ff3355"
-    MUTED_C   = "#ff3366"
-    TEXT      = "#8ffcff"
-    TEXT_DIM  = "#3a8a9a"
-    TEXT_MED  = "#5ab8cc"
-    WHITE     = "#d8f8ff"
-    DARK      = "#000d14"
-    BAR_BG    = "#011520"
+    ACC2      = "#ffd766"
+    GREEN     = "#9dffb0"
+    GREEN_D   = "#2f7a45"
+    RED       = "#ff4455"
+    MUTED_C   = "#ff6677"
+    TEXT      = "#ffe9b8"
+    TEXT_DIM  = "#8a744a"
+    TEXT_MED  = "#c2a566"
+    WHITE     = "#fff6df"
+    DARK      = "#0d0a03"
+    BAR_BG    = "#1c1505"
 
 
 # Ana renge (accent) bağlı anahtarlar — durum renkleri (ACC, GREEN, RED…) sabit kalır
@@ -92,156 +109,332 @@ _HUE_LINKED = (
 _PALETTE_DEFAULTS: dict[str, str] = {k: getattr(C, k) for k in _HUE_LINKED}
 
 DEFAULT_UI_COLOR = _PALETTE_DEFAULTS["PRI"]
+_LEGACY_DEFAULT_COLOR = "#00d4ff"   # eski cyan tema — bir kez yeni varsayılana göçürülür
 
-class SeriousModeCanvas(QWidget):
-    """Ciddi Mod Canvas: Sol tarafta 3D Siber Küre/Dünya, Ortada Doctor Harley Sawyer GIF'i, Sağda Türkçe Sistem Monitörü"""
+FONT_DISPLAY = "Exo 2"
+FONT_UI      = "Rajdhani"
+FONT_MONO    = "JetBrains Mono"
+
+
+def _font(family: str, size: int, weight: QFont.Weight = QFont.Weight.Normal) -> QFont:
+    """Paketli temaları kullan; yoksa Qt'nin güvenli sistem fontlarına düş."""
+    fallback = {
+        FONT_DISPLAY: "Bahnschrift",
+        FONT_UI: "Segoe UI Variable",
+        FONT_MONO: "Cascadia Mono",
+    }.get(family)
+    if fallback and not _FONTS_LOADED:
+        family = fallback
+    return QFont(family, size, weight)
+
+
+# ── Uygulama sürümü ve Türkçe durum yardımcıları ─────────────────────────────
+APP_VERSION = "4.0.0"
+
+_STATE_TR = {
+    "LISTENING":   "DİNLİYOR",
+    "SPEAKING":    "KONUŞUYOR",
+    "THINKING":    "DÜŞÜNÜYOR",
+    "PROCESSING":  "İŞLİYOR",
+    "SLEEPING":    "UYKU MODU",
+    "INITIALISING": "BAŞLATILIYOR",
+    "MUTED":       "MİKROFON SESSİZ",
+}
+
+
+def _tr_state(state: str) -> str:
+    """İç durum adını Türkçe ekranda gösterilecek metne çevirir."""
+    return _STATE_TR.get((state or "").upper(), (state or "").upper())
+
+
+_FONT_FILES = [
+    "Exo2.ttf", "Exo2-Italic.ttf",
+    "Rajdhani-Regular.ttf", "Rajdhani-SemiBold.ttf", "Rajdhani-Bold.ttf",
+    "JetBrainsMono.ttf",
+]
+_FONTS_LOADED = False
+
+
+def _load_app_fonts() -> bool:
+    """assets/fonts altındaki paketli fontları yükle. Başarısızlıkta sistem
+    fontlarına sessizce düşülür; uygulama çalışmaya devam eder."""
+    global _FONTS_LOADED
+    if _FONTS_LOADED:
+        return True
+    ok = 0
+    for fname in _FONT_FILES:
+        path = BASE_DIR / "assets" / "fonts" / fname
+        if path.exists():
+            fid = QFontDatabase.addApplicationFont(str(path))
+            if fid >= 0:
+                ok += 1
+    _FONTS_LOADED = ok > 0
+    return _FONTS_LOADED
+
+
+class NeoCanvas(QWidget):
+    """MehmetNEO — kodle çizilen taktik operasyon ekranı: radar taraması,
+    hedef kilitleri, altıgen ızgara ve canlı Türkçe telemetri."""
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
-        
-        # GIF Yükleme (Harley Sawyer)
-        gif_path = str(BASE_DIR / "assets" / "sawyer.gif")
-        self.movie = QMovie(gif_path)
-        if self.movie.isValid():
-            self.movie.frameChanged.connect(self.update)
-            self.movie.start()
-        
-        self.angle_x = 0.0
-        self.angle_y = 0.0
-        self.state   = "Dinliyor"
-        self.speaking = False
-        
-        self._sys_log = [
-            "SİSTEM BAŞLATILDI...",
-            "KİŞİLİK: MehmetNEO",
-            "ŞİFRELEME: AES-256 (AKTİF)",
-            "GÜVENLİK PROTOKOLÜ: NEO",
+        self._phase = 0.0
+        self._sweep = 0.0            # radar tarama açısı (derece)
+        self._state = "DİNLİYOR"
+        self._speaking = False
+        self._events = [
+            "ÇEKİRDEK BAĞLANTISI GÜVENLİ",
+            "BARANT PROTOKOLÜ ETKİN",
+            "MEHMETNEO HAZIR",
+            "SİSTEM TELEMETRİSİ AKIYOR",
         ]
-        
-        # 3D Dünya Küre Noktaları (Latitude & Longitude)
-        self.globe_nodes = []
-        radius = 1.0
-        for lat in range(-60, 70, 20):
-            r_lat = math.radians(lat)
-            y = radius * math.sin(r_lat)
-            rc = radius * math.cos(r_lat)
-            for lon in range(0, 360, 24):
-                r_lon = math.radians(lon)
-                x = rc * math.cos(r_lon)
-                z = rc * math.sin(r_lon)
-                self.globe_nodes.append((x, y, z))
+        # Radar temas noktaları: (açı°, yarıçap oranı, canlılık)
+        self._blips = [[42.0, 0.55, 1.0], [205.0, 0.38, 1.0], [318.0, 0.66, 1.0]]
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._step)
+        self._timer.start(24)
 
-        self._tmr = QTimer(self)
-        self._tmr.timeout.connect(self._step)
-        self._tmr.start(30)
-
-    def _step(self):
-        speed = 0.04 if self.speaking else 0.015
-        self.angle_x += speed * 0.7
-        self.angle_y += speed
-        
-        if random.random() < 0.06:
-            pkt = f"0x{random.randint(4096, 65535):04X} : PKT_GELDİ"
-            self._sys_log.append(pkt)
-            if len(self._sys_log) > 16:
-                self._sys_log.pop(0)
+    def set_state(self, state: str, speaking: bool = False) -> None:
+        self._state = _tr_state(state)
+        self._speaking = speaking
         self.update()
 
+    def _step(self) -> None:
+        speed = 0.075 if self._speaking else 0.025
+        self._phase = (self._phase + speed) % (2 * math.pi)
+        self._sweep = (self._sweep + (7.5 if self._speaking else 3.2)) % 360
+        # Tarama ışığı temas noktalarını canlandırır
+        for blip in self._blips:
+            diff = (blip[0] - self._sweep) % 360
+            if diff < 22:
+                blip[2] = min(1.0, blip[2] + 0.5)
+            else:
+                blip[2] = max(0.08, blip[2] - 0.012)
+        if random.random() < 0.006:
+            self._blips.append([random.uniform(0, 360), random.uniform(0.25, 0.72), 1.0])
+            if len(self._blips) > 6:
+                self._blips.pop(0)
+        if random.random() < 0.02:
+            self._events.append(random.choice([
+                f"SEKTÖR {random.randint(1, 9):02d} Taranıyor",
+                f"KANAL {random.randint(11, 99):02d} Senkronize",
+                "PERİMETRE Güvenli",
+                f"Paket {random.randint(4096, 65535):04X} Alındı",
+                "Şifreleme AES-256 Etkin",
+            ]))
+            self._events = self._events[-5:]
+        self.update()
+
+    # ── çizim ────────────────────────────────────────────────────────────────
     def paintEvent(self, _):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        W, H = self.width(), self.height()
-        
-        # Siyah / Koyu Kırmızı Matris Arka Planı
-        p.fillRect(self.rect(), QColor(6, 1, 4))
-        
-        # ── Sol Taraf: 3D Siber Küre / Dünya ─────────────────────────────────
-        cx, cy = W * 0.18, H * 0.5
-        globe_r = min(W, H) * 0.18
-        
-        # 3D Rotasyon Matrisi ve İzdüşüm
-        proj_nodes = []
-        cos_x, sin_x = math.cos(self.angle_x), math.sin(self.angle_x)
-        cos_y, sin_y = math.cos(self.angle_y), math.sin(self.angle_y)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        width, height = self.width(), self.height()
+        center_x, center_y = width / 2, height / 2
+        unit = min(width, height)
 
-        for x, y, z in self.globe_nodes:
-            # X Ekseni Rotasyonu
-            y1 = y * cos_x - z * sin_x
-            z1 = y * sin_x + z * cos_x
-            # Y Ekseni Rotasyonu
-            x2 = x * cos_y + z1 * sin_y
-            z2 = -x * sin_y + z1 * cos_y
-            
-            # Perspektif
-            fov = 300
-            scale = fov / (fov + z2 * globe_r)
-            px_x = cx + x2 * globe_r * scale
-            px_y = cy + y1 * globe_r * scale
-            proj_nodes.append((px_x, px_y, z2))
+        # zemin + vinyet
+        painter.fillRect(self.rect(), QColor("#0a0206"))
+        painter.fillRect(self.rect(), QColor(52, 8, 20, 60))
 
-        # Enlem/Boylam Çizgileri ve Düğümler
-        p.setPen(QPen(QColor("#ff003c"), 1.2, Qt.PenStyle.SolidLine))
-        num_nodes = len(proj_nodes)
-        for i in range(num_nodes):
-            x1, y1, z1 = proj_nodes[i]
-            if z1 < 0: # Ön yüzey
-                # Komşu düğümleri bağla
-                if (i + 1) % 15 != 0 and i + 1 < num_nodes:
-                    x2, y2, z2 = proj_nodes[i + 1]
-                    if z2 < 0:
-                        p.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+        self._paint_hex_grid(painter, width, height)
 
-                # Nokta çiz
-                dot_color = QColor("#00ff41") if i % 3 == 0 else QColor("#ff2255")
-                p.setBrush(QBrush(dot_color))
-                p.drawEllipse(QPointF(x1, y1), 2.5, 2.5)
+        # ── radar düyarı ────────────────────────────────────────────────────
+        radar_r = unit * 0.30
+        painter.setPen(QPen(QColor(228, 72, 116, 60), 1))
+        painter.setBrush(QBrush(QColor(30, 5, 12, 120)))
+        painter.drawEllipse(QRectF(center_x - radar_r, center_y - radar_r,
+                                   radar_r * 2, radar_r * 2))
+        for frac, alpha in ((0.33, 46), (0.66, 52), (1.0, 70)):
+            rr = radar_r * frac
+            painter.setPen(QPen(QColor(228, 72, 116, alpha), 1))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(QRectF(center_x - rr, center_y - rr, rr * 2, rr * 2))
+        painter.setPen(QPen(QColor(228, 72, 116, 26), 1))
+        painter.drawLine(QPointF(center_x - radar_r, center_y),
+                         QPointF(center_x + radar_r, center_y))
+        painter.drawLine(QPointF(center_x, center_y - radar_r),
+                         QPointF(center_x, center_y + radar_r))
 
-        # 3D Dünya Başlığı
-        p.setFont(QFont("Consolas", 9, QFont.Weight.Bold))
-        p.setPen(QColor("#ff003c"))
-        p.drawText(int(cx - 70), int(cy + globe_r + 25), "◈ 3D SİBER DÜNYA")
+        # tarama ışığı (koni gradyanı)
+        cone = QConicalGradient(QPointF(center_x, center_y), -self._sweep + 90)
+        cone.setColorAt(0.00, QColor(255, 60, 100, 165))
+        cone.setColorAt(0.06, QColor(255, 60, 100, 60))
+        cone.setColorAt(0.16, QColor(255, 60, 100, 0))
+        cone.setColorAt(0.86, QColor(255, 60, 100, 0))
+        cone.setColorAt(1.00, QColor(255, 60, 100, 165))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(cone))
+        painter.drawEllipse(QRectF(center_x - radar_r, center_y - radar_r,
+                                   radar_r * 2, radar_r * 2))
 
-        # ── Ortada: Harley Sawyer GIF ve Çerçevesi ───────────────────────────
-        center_x, center_y = int(W / 2), int(H / 2)
-        gif_size = 230
-        
-        # GIF Çerçevesi (Glow Kırmızı Kutu)
-        frame_rect = QRectF(center_x - gif_size/2 - 6, center_y - gif_size/2 - 6, gif_size + 12, gif_size + 12)
-        p.setPen(QPen(QColor("#ff003c"), 2))
-        p.setBrush(QBrush(QColor(15, 0, 5, 200)))
-        p.drawRoundedRect(frame_rect, 8, 8)
-        
-        if self.movie.currentPixmap() and not self.movie.currentPixmap().isNull():
-            pix = self.movie.currentPixmap().scaled(gif_size, gif_size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-            p.drawPixmap(int(center_x - pix.width()/2), int(center_y - pix.height()/2), pix)
-        else:
-            p.setPen(QColor("#ff003c"))
-            p.drawText(frame_rect, Qt.AlignmentFlag.AlignCenter, "[MehmetNEO]")
+        # temas noktaları
+        for blip in self._blips:
+            a_rad = math.radians(blip[0])
+            bx = center_x + math.cos(a_rad) * radar_r * blip[1]
+            by = center_y - math.sin(a_rad) * radar_r * blip[1]
+            life = blip[2]
+            painter.setPen(QPen(QColor(0, 255, 136, int(200 * life)), 1))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(QPointF(bx, by), 6.5, 6.5)
+            painter.setBrush(QBrush(QColor(0, 255, 136, int(235 * life))))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(QPointF(bx, by), 2.6, 2.6)
 
-        # Harley Sawyer İsim Başlığı
-        p.setFont(QFont("Consolas", 11, QFont.Weight.Bold))
-        p.setPen(QColor("#ffffff"))
-        p.drawText(QRectF(center_x - 150, center_y + gif_size/2 + 12, 300, 24), Qt.AlignmentFlag.AlignCenter, "MEHMET NEO")
-        p.setFont(QFont("Consolas", 8))
-        p.setPen(QColor("#ff3355"))
-        p.drawText(QRectF(center_x - 150, center_y + gif_size/2 + 32, 300, 20), Qt.AlignmentFlag.AlignCenter, "CİDDİ MOD // MODEL: GLM 5.2")
+        # merkez çekirdek
+        core_r = unit * (0.030 + 0.004 * math.sin(self._phase * 2.2))
+        halo = QRadialGradient(QPointF(center_x, center_y), core_r * 3.4)
+        halo.setColorAt(0, QColor("#ffd9e4"))
+        halo.setColorAt(0.22, QColor("#ff5c85"))
+        halo.setColorAt(0.55, QColor(150, 24, 56, 110))
+        halo.setColorAt(1, QColor(30, 6, 14, 0))
+        painter.setBrush(QBrush(halo))
+        painter.drawEllipse(QRectF(center_x - core_r * 3.4, center_y - core_r * 3.4,
+                                   core_r * 6.8, core_r * 6.8))
+        painter.setBrush(QBrush(QColor("#ff2f63")))
+        painter.drawEllipse(QRectF(center_x - core_r, center_y - core_r,
+                                   core_r * 2, core_r * 2))
 
-        # ── Sağ Taraf: Canlı Türkçe Sistem ve Akış Günlüğü ─────────────────
-        p.setFont(QFont("Consolas", 9, QFont.Weight.Bold))
-        p.setPen(QColor("#00ff41"))
-        p.drawText(int(W * 0.76), int(H * 0.18), "◈ CANLI SİSTEM AKIŞI")
+        # dönen dış yaylar
+        for index, radius_factor in enumerate((0.36, 0.40, 0.45)):
+            radius = unit * radius_factor
+            painter.setPen(QPen(QColor(228, 72, 116, 70 + index * 25), 2 - index * 0.5))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            rect = QRectF(center_x - radius, center_y - radius, radius * 2, radius * 2)
+            start = int((self._phase * (58 + index * 30) + index * 121) * 16)
+            painter.drawArc(rect, start, 1160)
+            painter.drawArc(rect, start + 2670, 780)
 
-        p.setFont(QFont("Consolas", 8))
-        p.setPen(QColor("#00ff88"))
-        y_offset = H * 0.23
-        for log in self._sys_log:
-            p.drawText(QRectF(W * 0.76, y_offset, W * 0.22, 18), Qt.AlignmentFlag.AlignLeft, log)
-            y_offset += 19
+        # ── hedef kilitleri ─────────────────────────────────────────────────
+        self._paint_target_lock(painter, width * 0.20, height * 0.30, unit * 0.11, self._phase)
+        self._paint_target_lock(painter, width * 0.80, height * 0.68, unit * 0.13,
+                                -self._phase * 1.3 + 2.0)
 
-        # CRT Scanline Efekti
-        p.setPen(QColor(0, 0, 0, 80))
-        for y in range(0, H, 3):
-            p.drawLine(0, y, W, y)
+        # ── başlık bloğu ────────────────────────────────────────────────────
+        painter.setFont(_font(FONT_DISPLAY, 24, QFont.Weight.Bold))
+        painter.setPen(QColor("#ffe3ec"))
+        painter.drawText(QRectF(0, center_y + unit * 0.36, width, 34),
+                         Qt.AlignmentFlag.AlignCenter, "MEHMETNEO")
+        painter.setFont(_font(FONT_MONO, 9, QFont.Weight.DemiBold))
+        painter.setPen(QColor("#ff7d9d"))
+        painter.drawText(QRectF(0, center_y + unit * 0.36 + 32, width, 20),
+                         Qt.AlignmentFlag.AlignCenter, f"CİDDİ MOD  •  {self._state}")
+
+        # alt osiloskop dalgası
+        wave_y = center_y + unit * 0.47
+        painter.setPen(QPen(QColor(228, 72, 116, 200), 1.6))
+        amp = unit * (0.030 if self._speaking else 0.008)
+        prev_x = prev_y = None
+        for i in range(0, int(width * 0.55), 6):
+            x = width * 0.225 + i
+            y = wave_y + math.sin(self._phase * 3 + i * 0.045) * amp * (0.6 + 0.4 * math.sin(i * 0.012))
+            if prev_x is not None:
+                painter.drawLine(QPointF(prev_x, prev_y), QPointF(x, y))
+            prev_x, prev_y = x, y
+
+        # ── köşe telemetri blokları ─────────────────────────────────────────
+        self._draw_status_block(painter, 20, 20, "NEO // DURUM", [
+            ("DURUM",  self._state),
+            ("KANAL",  "ŞİFRELİ"),
+            ("KİMLİK", "MEHMETNEO"),
+        ])
+        self._draw_status_block(painter, width - 220, 20, "BARANT // AKIŞ", [
+            ("01", self._events[-1]),
+            ("02", self._events[-2] if len(self._events) > 1 else "HAZIR"),
+            ("03", "OTONOMİ İZLENİYOR"),
+        ])
+
+        # tehlike seviyesi göstergesi (sol alt)
+        painter.setFont(_font(FONT_MONO, 8, QFont.Weight.DemiBold))
+        painter.setPen(QColor("#ff7d9d"))
+        painter.drawText(QRectF(20, height - 44, 150, 16),
+                         Qt.AlignmentFlag.AlignLeft, "TEHLİKE SEVİYESİ")
+        for i in range(5):
+            bx = 20 + i * 20
+            col = QColor(255, 60, 100, 230) if i < 2 else QColor(90, 30, 45, 120)
+            painter.fillRect(QRectF(bx, height - 24, 14, 8), col)
+
+        # tarama çizgileri (CRT)
+        painter.setPen(QColor(0, 0, 0, 70))
+        for y in range(0, height, 3):
+            painter.drawLine(0, y, width, y)
+
+    # ── yardımcı çizimler ────────────────────────────────────────────────────
+    def _paint_hex_grid(self, painter: QPainter, width: int, height: int) -> None:
+        """Altıgen ızgara — taktik arka plan."""
+        size = 34
+        hex_h = size * math.sqrt(3)
+        painter.setPen(QPen(QColor(120, 30, 52, 34), 1))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        row = 0
+        y = -hex_h
+        while y < height + hex_h:
+            offset = (size * 1.5) if row % 2 else 0.0
+            x = -size * 2 + offset
+            while x < width + size * 2:
+                cxp, cyp = x, y + hex_h / 2
+                pts = []
+                for k in range(6):
+                    ang = math.pi / 3 * k
+                    pts.append(QPointF(cxp + size * 0.86 * math.cos(ang),
+                                       cyp + size * 0.86 * math.sin(ang)))
+                painter.drawPolygon(pts)
+                x += size * 1.5
+            y += hex_h / 2
+            row += 1
+
+    def _paint_target_lock(self, painter: QPainter, cx: float, cy: float,
+                           r: float, phase: float) -> None:
+        """Animasyonlu hedef kilit braketleri + dönen kadran."""
+        col = QColor(255, 60, 100, 170)
+        painter.setPen(QPen(col, 1.6))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        rect = QRectF(cx - r, cy - r, r * 2, r * 2)
+        painter.drawArc(rect, 0, 5760)
+        # dönen kadran çizgileri
+        for k in range(4):
+            ang = phase + k * math.pi / 2
+            x1 = cx + math.cos(ang) * r * 0.82
+            y1 = cy - math.sin(ang) * r * 0.82
+            x2 = cx + math.cos(ang) * r
+            y2 = cy - math.sin(ang) * r
+            painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+        # köşe braketleri
+        b = r * 0.42
+        for sx, sy in ((-1, -1), (1, -1), (-1, 1), (1, 1)):
+            corner_x = cx + sx * r * 1.18
+            corner_y = cy + sy * r * 1.18
+            painter.drawLine(QPointF(corner_x, corner_y),
+                             QPointF(corner_x - sx * b, corner_y))
+            painter.drawLine(QPointF(corner_x, corner_y),
+                             QPointF(corner_x, corner_y - sy * b))
+        # merkez nokta
+        painter.setBrush(QBrush(QColor(255, 60, 100, 220)))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(QPointF(cx, cy), 2.2, 2.2)
+
+    def _draw_status_block(self, painter: QPainter, x: float, y: float, title: str,
+                           rows: list[tuple[str, str]]) -> None:
+        block_width, block_height = 200, 106
+        painter.setBrush(QBrush(QColor(14, 4, 9, 195)))
+        painter.setPen(QPen(QColor("#8a2c48"), 1))
+        painter.drawRoundedRect(QRectF(x, y, block_width, block_height), 6, 6)
+        painter.setPen(QPen(QColor("#ff4d79"), 2))
+        painter.drawLine(QPointF(x + 10, y + 26), QPointF(x + 58, y + 26))
+        painter.setFont(_font(FONT_MONO, 8, QFont.Weight.Bold))
+        painter.setPen(QColor("#ff9db6"))
+        painter.drawText(QRectF(x + 10, y + 8, block_width - 20, 16),
+                         Qt.AlignmentFlag.AlignLeft, title)
+        painter.setFont(_font(FONT_MONO, 7))
+        for index, (key, value) in enumerate(rows):
+            row_y = y + 42 + index * 20
+            painter.setPen(QColor("#b0637c"))
+            painter.drawText(x + 10, row_y, key)
+            painter.setPen(QColor("#f2dde4"))
+            painter.drawText(QRectF(x + 62, row_y - 11, block_width - 72, 15),
+                             Qt.AlignmentFlag.AlignRight, value[:20])
+
 
 def apply_ui_accent(accent_hex: str) -> bool:
     """
@@ -696,7 +889,7 @@ class HudCanvas(QWidget):
                 p.setPen(Qt.PenStyle.NoPen)
                 p.drawEllipse(QRectF(cx - r2, cy - r2, r2 * 2, r2 * 2))
             p.setPen(QPen(qcol(C.PRI, min(255, int(self._halo * 2))), 1))
-            p.setFont(QFont("Courier New", 13, QFont.Weight.Bold))
+            p.setFont(_font(FONT_DISPLAY, 15, QFont.Weight.DemiBold))
             p.drawText(QRectF(cx - 80, cy - 14, 160, 28),
                        Qt.AlignmentFlag.AlignCenter, self._assistant_name)
 
@@ -707,27 +900,30 @@ class HudCanvas(QWidget):
             p.setBrush(QBrush(qcol(C.PRI, a)))
             p.drawEllipse(QPointF(pt[0], pt[1]), 2.5, 2.5)
 
-        # status text
+        # durum metni (Türkçe)
         sy = cy + fw * 0.40
         if self.muted:
-            txt, col = "⊘  SUSTURULDU",     qcol(C.MUTED_C)
+            txt, col = "⊘  MİKROFON SESSİZ", qcol(C.MUTED_C)
         elif self.speaking:
-            txt, col = "●  KONUŞUYOR",  qcol(C.ACC)
-        elif self.state == "DÜŞÜNÜYOR":
+            txt, col = "●  KONUŞUYOR", qcol(C.ACC)
+        elif self.state == "THINKING":
             sym = "◈" if self._blink else "◇"
-            txt, col = f"{sym}  DÜŞÜNÜYOR",   qcol(C.ACC2)
-        elif self.state == "İŞLENİYOR":
+            txt, col = f"{sym}  DÜŞÜNÜYOR", qcol(C.ACC2)
+        elif self.state == "PROCESSING":
             sym = "▷" if self._blink else "▶"
-            txt, col = f"{sym}  İŞLENİYOR", qcol(C.ACC2)
-        elif self.state == "DİNLİYOR":
+            txt, col = f"{sym}  İŞLİYOR", qcol(C.ACC2)
+        elif self.state in ("LISTENING", "DİNLİYOR", "Dinliyor"):
             sym = "●" if self._blink else "○"
-            txt, col = f"{sym}  DİNLİYOR",  qcol(C.GREEN)
+            txt, col = f"{sym}  DİNLİYOR", qcol(C.GREEN)
+        elif self.state == "SLEEPING":
+            sym = "☾" if self._blink else "☽"
+            txt, col = f"{sym}  UYKU MODU", qcol(C.TEXT_DIM)
         else:
             sym = "●" if self._blink else "○"
-            txt, col = f"{sym}  {self.state}", qcol(C.PRI)
+            txt, col = f"{sym}  {_tr_state(self.state)}", qcol(C.PRI)
 
         p.setPen(QPen(col, 1))
-        p.setFont(QFont("Courier New", 11, QFont.Weight.Bold))
+        p.setFont(_font(FONT_DISPLAY, 12, QFont.Weight.DemiBold))
         p.drawText(QRectF(0, sy, W, 26), Qt.AlignmentFlag.AlignCenter, txt)
 
         # waveform
@@ -746,6 +942,7 @@ class HudCanvas(QWidget):
             p.fillRect(QRectF(wx0 + i * bw, wy + 20 - hgt, bw - 1, hgt), cl)
 
 class MetricBar(QWidget):
+    """JARVIS tarzı telemetri çubuğu: gradyan dolgu, parlama ucu ve kadran çizgileri."""
 
     def __init__(self, label: str, color: str = C.PRI, parent=None):
         super().__init__(parent)
@@ -753,7 +950,7 @@ class MetricBar(QWidget):
         self._color = color
         self._value = 0.0       # 0–100
         self._text  = "--"
-        self.setFixedHeight(38)
+        self.setFixedHeight(44)
         self.setMinimumWidth(80)
 
     def set_value(self, pct: float, text: str):
@@ -766,19 +963,26 @@ class MetricBar(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         W, H = self.width(), self.height()
 
+        # gövde
         p.setBrush(QBrush(qcol(C.PANEL2)))
         p.setPen(QPen(qcol(C.BORDER_A), 1))
-        p.drawRoundedRect(QRectF(1, 1, W - 2, H - 2), 4, 4)
+        p.drawRoundedRect(QRectF(1, 1, W - 2, H - 2), 6, 6)
 
-        bar_h   = 4
-        bar_y   = H - bar_h - 5
+        bar_h   = 7
+        bar_y   = H - bar_h - 6
         bar_w   = W - 12
         bar_x   = 6
-        fill_w  = int(bar_w * self._value / 100)
+        fill_w  = bar_w * self._value / 100
 
         p.setBrush(QBrush(qcol(C.BAR_BG)))
         p.setPen(Qt.PenStyle.NoPen)
-        p.drawRoundedRect(QRectF(bar_x, bar_y, bar_w, bar_h), 2, 2)
+        p.drawRoundedRect(QRectF(bar_x, bar_y, bar_w, bar_h), 3, 3)
+
+        # kadran çizgileri (arka planda ince tık işaretleri)
+        p.setPen(QPen(qcol(C.BORDER, 130), 1))
+        for i in range(1, 10):
+            tx = bar_x + bar_w * i / 10
+            p.drawLine(QPointF(tx, bar_y), QPointF(tx, bar_y + bar_h))
 
         if self._value > 85:
             bar_col = qcol(C.RED)
@@ -787,17 +991,26 @@ class MetricBar(QWidget):
         else:
             bar_col = qcol(self._color)
 
-        if fill_w > 0:
-            p.setBrush(QBrush(bar_col))
-            p.drawRoundedRect(QRectF(bar_x, bar_y, fill_w, bar_h), 2, 2)
+        if fill_w > 1:
+            grad = QLinearGradient(QPointF(bar_x, 0), QPointF(bar_x + fill_w, 0))
+            c0 = QColor(bar_col); c0.setAlpha(90)
+            grad.setColorAt(0.0, c0)
+            grad.setColorAt(1.0, bar_col)
+            p.setBrush(QBrush(grad))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawRoundedRect(QRectF(bar_x, bar_y, fill_w, bar_h), 3, 3)
+            # parlama ucu
+            p.setBrush(QBrush(QColor(255, 255, 255, 150)))
+            p.drawRoundedRect(QRectF(bar_x + fill_w - 2.5, bar_y, 2.5, bar_h), 1, 1)
 
-        p.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
-        p.setPen(QPen(qcol(C.TEXT_DIM), 1))
-        p.drawText(QRectF(8, 5, 50, 14), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self._label)
+        # etiket + değer
+        p.setFont(_font(FONT_MONO, 9, QFont.Weight.DemiBold))
+        p.setPen(QPen(qcol(C.TEXT_MED), 1))
+        p.drawText(QRectF(9, 6, 60, 16), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self._label)
 
-        p.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
+        p.setFont(_font(FONT_DISPLAY, 12, QFont.Weight.DemiBold))
         p.setPen(QPen(bar_col if self._text != "--" else qcol(C.TEXT_DIM), 1))
-        p.drawText(QRectF(0, 4, W - 6, 16), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, self._text)
+        p.drawText(QRectF(0, 3, W - 9, 18), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, self._text)
 
 class LogWidget(QTextEdit):
     _sig = pyqtSignal(str)
@@ -805,14 +1018,14 @@ class LogWidget(QTextEdit):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setReadOnly(True)
-        self.setFont(QFont("Courier New", 9))
+        self.setFont(_font(FONT_MONO, 10))
         self.setStyleSheet(f"""
             QTextEdit {{
                 background: {C.PANEL};
                 color: {C.TEXT};
                 border: 1px solid {C.BORDER};
-                border-radius: 4px;
-                padding: 6px;
+                border-radius: 10px;
+                padding: 10px;
                 selection-background-color: {C.PRI_GHO};
             }}
             QScrollBar:vertical {{
@@ -829,6 +1042,7 @@ class LogWidget(QTextEdit):
         self._queue: list[str] = []
         self._typing  = False
         self._text    = ""
+        self._disp    = ""   # ekranda gösterilen (Türkçeleştirilmiş) metin
         self._pos     = 0
         self._tag     = "sys"
         self._ai_name_lc = "Mehmet"   # updated when assistant name changes
@@ -855,14 +1069,25 @@ class LogWidget(QTextEdit):
         _ai_pfx = f"{self._ai_name_lc}:"
         if   tl.startswith("you:"):                              self._tag = "you"
         elif tl.startswith(_ai_pfx) or tl.startswith("Mehmet:"): self._tag = "ai"
-        elif tl.startswith("file:"):                             self._tag = "file"
-        elif "err" in tl:                                        self._tag = "err"
+        elif tl.startswith("file:") or tl.startswith("dosya:"):  self._tag = "file"
+        elif tl.startswith("err:") or tl.startswith("hata:"):    self._tag = "err"
         else:                                                    self._tag = "sys"
+        # Ekranda Türkçe ön ek göster (etiketleme orijinal metinle yapılır)
+        if   self._tag == "you" and tl.startswith("you:"):
+            self._disp = "Sen: " + self._text[4:].lstrip()
+        elif self._tag == "sys" and tl.startswith("sys:"):
+            self._disp = "SİSTEM: " + self._text[4:].lstrip()
+        elif self._tag == "err" and tl.startswith("err:"):
+            self._disp = "HATA: " + self._text[4:].lstrip()
+        elif self._tag == "file" and tl.startswith("file:"):
+            self._disp = "DOSYA: " + self._text[5:].lstrip()
+        else:
+            self._disp = self._text
         self._tmr.start(6)
 
     def _step(self):
         if self._pos < len(self._text):
-            ch  = self._text[self._pos]
+            ch  = self._disp[self._pos]
             cur = self.textCursor()
             fmt = cur.charFormat()
             col = {
@@ -980,15 +1205,15 @@ class FileDropZone(QWidget):
 
     def _browse(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Select a file for Mehmet", str(Path.home()),
-            "All Files (*.*);;"
-            "Images (*.jpg *.jpeg *.png *.gif *.webp *.bmp *.svg);;"
-            "Documents (*.pdf *.docx *.txt *.md *.pptx);;"
-            "Data (*.csv *.xlsx *.json *.xml);;"
-            "Code (*.py *.js *.ts *.html *.css *.java *.cpp *.go);;"
-            "Audio (*.mp3 *.wav *.ogg *.m4a *.aac *.flac);;"
-            "Video (*.mp4 *.avi *.mov *.mkv *.wmv *.webm);;"
-            "Archives (*.zip *.rar *.tar *.gz *.7z)",
+            self, "Mehmet için dosya seçin", str(Path.home()),
+            "Tüm Dosyalar (*.*);;"
+            "Görseller (*.jpg *.jpeg *.png *.gif *.webp *.bmp *.svg);;"
+            "Belgeler (*.pdf *.docx *.txt *.md *.pptx);;"
+            "Veriler (*.csv *.xlsx *.json *.xml);;"
+            "Kod (*.py *.js *.ts *.html *.css *.java *.cpp *.go);;"
+            "Ses (*.mp3 *.wav *.ogg *.m4a *.aac *.flac);;"
+            "Videolar (*.mp4 *.avi *.mov *.mkv *.wmv *.webm);;"
+            "Arşivler (*.zip *.rar *.tar *.gz *.7z)",
         )
         if path:
             self._set_file(path)
@@ -1012,7 +1237,7 @@ class _DropCanvas(QWidget):
         pad  = 6
         rect = QRectF(pad, pad, W - pad * 2, H - pad * 2)
 
-        bg_col = qcol("#001a24" if z._drag_over else ("#001218" if z._hovering else C.PANEL))
+        bg_col = qcol("#241a04" if z._drag_over else ("#1a1305" if z._hovering else C.PANEL))
         p.setBrush(QBrush(bg_col)); p.setPen(Qt.PenStyle.NoPen)
         p.drawRoundedRect(rect, 6, 6)
 
@@ -1038,23 +1263,23 @@ class _DropCanvas(QWidget):
         p.drawLine(QPointF(cx - 8, cy - 6), QPointF(cx, cy - 14))
         p.drawLine(QPointF(cx + 8, cy - 6), QPointF(cx, cy - 14))
         p.drawLine(QPointF(cx - 14, cy + 4), QPointF(cx + 14, cy + 4))
-        p.setFont(QFont("Courier New", 8))
+        p.setFont(_font(FONT_UI, 11, QFont.Weight.DemiBold))
         p.setPen(QPen(qcol(C.PRI_DIM if not hover else C.TEXT), 1))
-        p.drawText(QRectF(0, cy + 8, W, 16), Qt.AlignmentFlag.AlignCenter,
-                   "Drop file here  or  Click to Browse")
-        p.setFont(QFont("Courier New", 7))
-        p.setPen(QPen(qcol("#1a4a5a"), 1))
-        p.drawText(QRectF(0, cy + 24, W, 14), Qt.AlignmentFlag.AlignCenter,
-                   "Images · Video · Audio · PDF · Docs · Code · Data")
+        p.drawText(QRectF(0, cy + 8, W, 18), Qt.AlignmentFlag.AlignCenter,
+                   "Dosyayı buraya bırakın veya seçmek için tıklayın")
+        p.setFont(_font(FONT_MONO, 8))
+        p.setPen(QPen(qcol("#5a4620"), 1))
+        p.drawText(QRectF(0, cy + 26, W, 15), Qt.AlignmentFlag.AlignCenter,
+                   "Görsel · Video · Ses · PDF · Belge · Kod · Veri")
 
     def _paint_drag_over(self, p, W, H):
         cx, cy = W / 2, H / 2
-        p.setFont(QFont("Courier New", 20))
+        p.setFont(QFont(FONT_DISPLAY, 20))
         p.setPen(QPen(qcol(C.PRI), 1))
         p.drawText(QRectF(0, cy - 24, W, 32), Qt.AlignmentFlag.AlignCenter, "⬇")
-        p.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        p.setFont(_font(FONT_UI, 11, QFont.Weight.DemiBold))
         p.setPen(QPen(qcol(C.PRI), 1))
-        p.drawText(QRectF(0, cy + 12, W, 16), Qt.AlignmentFlag.AlignCenter, "Release to load")
+        p.drawText(QRectF(0, cy + 12, W, 18), Qt.AlignmentFlag.AlignCenter, "Yüklemek için bırakın")
 
     def _paint_file(self, p, W, H):
         path = Path(self._z._current_file)
@@ -1071,26 +1296,26 @@ class _DropCanvas(QWidget):
         tx = block_x + block_w + 6
         tw = W - tx - 38
 
-        p.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        p.setFont(_font(FONT_MONO, 10, QFont.Weight.Bold))
         p.setPen(QPen(qcol(C.WHITE), 1))
         name = path.name if len(path.name) <= 34 else path.name[:31] + "..."
-        p.drawText(QRectF(tx, H * 0.18, tw, 16),
+        p.drawText(QRectF(tx, H * 0.14, tw, 18),
                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, name)
 
-        p.setFont(QFont("Courier New", 7))
-        p.setPen(QPen(qcol(C.TEXT_DIM), 1))
-        p.drawText(QRectF(tx, H * 0.18 + 18, tw, 14),
+        p.setFont(_font(FONT_MONO, 9))
+        p.setPen(QPen(qcol(C.TEXT_MED), 1))
+        p.drawText(QRectF(tx, H * 0.14 + 19, tw, 16),
                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                    f"{ext_str}  ·  {size_str}")
 
-        p.setFont(QFont("Courier New", 6))
-        p.setPen(QPen(qcol("#1e5c6a"), 1))
+        p.setFont(_font(FONT_MONO, 8))
+        p.setPen(QPen(qcol("#5a4620"), 1))
         par = str(path.parent)
         if len(par) > 42: par = "…" + par[-41:]
-        p.drawText(QRectF(tx, H * 0.18 + 34, tw, 12),
+        p.drawText(QRectF(tx, H * 0.14 + 36, tw, 14),
                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, par)
 
-        p.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
+        p.setFont(_font(FONT_DISPLAY, 12, QFont.Weight.Bold))
         p.setPen(QPen(qcol(C.RED, 180), 1))
         p.drawText(QRectF(W - 34, 0, 28, H), Qt.AlignmentFlag.AlignCenter, "✕")
 
@@ -1112,7 +1337,7 @@ class _CameraPreview(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet(f"""
             _CameraPreview {{
-                background: rgba(0, 6, 10, 242);
+                background: rgba(7, 5, 2, 242);
                 border: 1px solid {C.PRI};
                 border-radius: 6px;
             }}
@@ -1124,14 +1349,14 @@ class _CameraPreview(QWidget):
         lay.setSpacing(4)
 
         hdr = QHBoxLayout()
-        title = QLabel("◈  VISUAL INPUT")
-        title.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
+        title = QLabel("◈  GÖRSEL GİRİŞ")
+        title.setFont(_font(FONT_MONO, 9, QFont.Weight.Bold))
         title.setStyleSheet(f"color: {C.PRI}; background: transparent;")
         hdr.addWidget(title)
         hdr.addStretch()
         close_btn = QPushButton("✕")
-        close_btn.setFixedSize(16, 16)
-        close_btn.setFont(QFont("Courier New", 8))
+        close_btn.setFixedSize(18, 18)
+        close_btn.setFont(_font(FONT_UI, 10))
         close_btn.setStyleSheet(
             f"color: {C.TEXT_DIM}; background: transparent; border: none;"
         )
@@ -1177,9 +1402,9 @@ class SetupOverlay(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet(f"""
             SetupOverlay {{
-                background: rgba(0, 6, 10, 245);
+                background: rgba(7, 5, 2, 245);
                 border: 1px solid {C.BORDER_B};
-                border-radius: 6px;
+                border-radius: 10px;
             }}
         """)
 
@@ -1189,37 +1414,37 @@ class SetupOverlay(QWidget):
         self._sel_os = detected
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(30, 22, 30, 22)
+        layout.setContentsMargins(30, 24, 30, 24)
         layout.setSpacing(8)
 
-        def _lbl(txt, font_size=9, bold=False, color=C.PRI,
+        def _lbl(txt, font_size=10, bold=False, color=C.PRI,
                  align=Qt.AlignmentFlag.AlignCenter):
             w = QLabel(txt)
             w.setAlignment(align)
-            w.setFont(QFont("Courier New", font_size,
+            w.setFont(_font(FONT_UI, font_size,
                             QFont.Weight.Bold if bold else QFont.Weight.Normal))
             w.setStyleSheet(f"color: {color}; background: transparent;")
             return w
 
-        layout.addWidget(_lbl("◈  İNDİRME GEREKLİ", 13, True))
-        layout.addWidget(_lbl("İlk Başlatmadan Önce Mehmet'i Kur.", 9, color=C.PRI_DIM))
+        layout.addWidget(_lbl("◈  KURULUM GEREKLİ", 16, True))
+        layout.addWidget(_lbl("İlk başlatmadan önce Mehmet'in sistemine bağlanın.", 11, color=C.PRI_DIM))
         layout.addSpacing(6)
 
         sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
         sep.setStyleSheet(f"color: {C.BORDER};"); layout.addWidget(sep)
         layout.addSpacing(4)
 
-        layout.addWidget(_lbl("GEMINI API KEY", 8, color=C.TEXT_DIM,
+        layout.addWidget(_lbl("GEMINI API ANAHTARI", 10, color=C.TEXT_DIM,
                                align=Qt.AlignmentFlag.AlignLeft))
         self._key_input = QLineEdit()
         self._key_input.setEchoMode(QLineEdit.EchoMode.Password)
         self._key_input.setPlaceholderText("AIza…")
-        self._key_input.setFont(QFont("Courier New", 10))
-        self._key_input.setFixedHeight(32)
+        self._key_input.setFont(_font(FONT_MONO, 11))
+        self._key_input.setFixedHeight(36)
         self._key_input.setStyleSheet(f"""
             QLineEdit {{
-                background: #000d12; color: {C.TEXT};
-                border: 1px solid {C.BORDER}; border-radius: 3px; padding: 4px 8px;
+                background: {C.DARK}; color: {C.TEXT};
+                border: 1px solid {C.BORDER}; border-radius: 5px; padding: 5px 10px;
             }}
             QLineEdit:focus {{ border: 1px solid {C.PRI}; }}
         """)
@@ -1230,18 +1455,18 @@ class SetupOverlay(QWidget):
         sep2.setStyleSheet(f"color: {C.BORDER};"); layout.addWidget(sep2)
         layout.addSpacing(4)
 
-        layout.addWidget(_lbl("OPERATING SYSTEM", 8, color=C.TEXT_DIM,
+        layout.addWidget(_lbl("İŞLETİM SİSTEMİ", 10, color=C.TEXT_DIM,
                                align=Qt.AlignmentFlag.AlignLeft))
         det_name = {"windows": "Windows", "mac": "macOS", "linux": "Linux"}[detected]
-        layout.addWidget(_lbl(f"Auto-detected: {det_name}", 8, color=C.ACC2,
+        layout.addWidget(_lbl(f"Otomatik algılandı: {det_name}", 10, color=C.ACC2,
                                align=Qt.AlignmentFlag.AlignLeft))
 
         os_row = QHBoxLayout(); os_row.setSpacing(6)
         self._os_btns: dict[str, QPushButton] = {}
         for key, label in [("windows","⊞  Windows"),("mac","  macOS"),("linux","🐧  Linux")]:
             btn = QPushButton(label)
-            btn.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
-            btn.setFixedHeight(32)
+            btn.setFont(_font(FONT_UI, 11, QFont.Weight.Bold))
+            btn.setFixedHeight(36)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.clicked.connect(lambda _, k=key: self._sel(k))
             os_row.addWidget(btn)
@@ -1250,14 +1475,14 @@ class SetupOverlay(QWidget):
         self._sel(detected)
         layout.addSpacing(12)
 
-        init_btn = QPushButton("▸  INITIALISE SYSTEMS")
-        init_btn.setFont(QFont("Courier New", 10, QFont.Weight.Bold))
-        init_btn.setFixedHeight(36)
+        init_btn = QPushButton("▸  SİSTEMİ BAŞLAT")
+        init_btn.setFont(_font(FONT_UI, 12, QFont.Weight.Bold))
+        init_btn.setFixedHeight(40)
         init_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         init_btn.setStyleSheet(f"""
             QPushButton {{
                 background: transparent; color: {C.PRI};
-                border: 1px solid {C.PRI_DIM}; border-radius: 3px;
+                border: 1px solid {C.PRI_DIM}; border-radius: 5px;
             }}
             QPushButton:hover {{
                 background: {C.PRI_GHO}; border: 1px solid {C.PRI};
@@ -1281,8 +1506,8 @@ class SetupOverlay(QWidget):
             else:
                 btn.setStyleSheet(f"""
                     QPushButton {{
-                        background: #000d12; color: {C.TEXT_DIM};
-                        border: 1px solid {C.BORDER}; border-radius: 3px;
+                        background: {C.DARK}; color: {C.TEXT_DIM};
+                        border: 1px solid {C.BORDER}; border-radius: 5px;
                     }}
                     QPushButton:hover {{ color: {C.TEXT}; border: 1px solid {C.BORDER_B}; }}
                 """)
@@ -1401,58 +1626,58 @@ class CustomizeOverlay(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet(f"""
             CustomizeOverlay {{
-                background: rgba(0, 6, 10, 245);
+                background: rgba(7, 5, 2, 245);
                 border: 1px solid {C.BORDER_B};
-                border-radius: 6px;
+                border-radius: 10px;
             }}
         """)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(24, 18, 24, 18)
         lay.setSpacing(8)
 
-        def _lbl(txt, fs=9, bold=False, color=C.PRI, align=Qt.AlignmentFlag.AlignCenter):
+        def _lbl(txt, fs=10, bold=False, color=C.PRI, align=Qt.AlignmentFlag.AlignCenter):
             w = QLabel(txt); w.setAlignment(align)
-            w.setFont(QFont("Courier New", fs,
+            w.setFont(_font(FONT_UI, fs,
                             QFont.Weight.Bold if bold else QFont.Weight.Normal))
             w.setStyleSheet(f"color: {color}; background: transparent;")
             return w
 
-        _fs = (f"QLineEdit {{ background: #000d12; color: {C.TEXT}; "
-               f"border: 1px solid {C.BORDER}; border-radius: 3px; padding: 4px 8px; }}"
+        _fs = (f"QLineEdit {{ background: {C.DARK}; color: {C.TEXT}; "
+               f"border: 1px solid {C.BORDER}; border-radius: 5px; padding: 5px 10px; }}"
                f"QLineEdit:focus {{ border: 1px solid {C.PRI}; }}")
 
-        lay.addWidget(_lbl("⚙  CUSTOMISE ASSISTANT", 12, True))
+        lay.addWidget(_lbl("⚙  MEHMET'İ KİŞİSELLEŞTİR", 14, True))
         sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
         sep.setStyleSheet(f"color: {C.BORDER}; margin: 2px 0;")
         lay.addWidget(sep)
 
-        lay.addWidget(_lbl("ASSISTANT NAME", 8, color=C.TEXT_DIM,
+        lay.addWidget(_lbl("YAPAY ZEKÂ ADI", 10, color=C.TEXT_DIM,
                             align=Qt.AlignmentFlag.AlignLeft))
         self._name_input = QLineEdit(assistant_name)
-        self._name_input.setFont(QFont("Courier New", 10))
-        self._name_input.setFixedHeight(32)
+        self._name_input.setFont(_font(FONT_UI, 12))
+        self._name_input.setFixedHeight(34)
         self._name_input.setStyleSheet(_fs)
         lay.addWidget(self._name_input)
 
         lay.addSpacing(4)
-        lay.addWidget(_lbl("YOUR NAME  (leave blank for default sir / efendim)", 8,
+        lay.addWidget(_lbl("SİZİN ADINIZ  (varsayılan hitap için boş bırakın)", 10,
                             color=C.TEXT_DIM, align=Qt.AlignmentFlag.AlignLeft))
         self._user_input = QLineEdit(user_name)
-        self._user_input.setPlaceholderText("e.g.  Tony   (leave blank for auto)")
-        self._user_input.setFont(QFont("Courier New", 10))
-        self._user_input.setFixedHeight(32)
+        self._user_input.setPlaceholderText("ör. Baran  (otomatik için boş bırakın)")
+        self._user_input.setFont(_font(FONT_UI, 12))
+        self._user_input.setFixedHeight(34)
         self._user_input.setStyleSheet(_fs)
         lay.addWidget(self._user_input)
 
         # ── UI colour — renk çarkı ───────────────────────────────────────────
         lay.addSpacing(4)
         clr_hdr = QHBoxLayout()
-        clr_hdr.addWidget(_lbl("UI COLOUR  —  drag the handle", 8,
+        clr_hdr.addWidget(_lbl("ARAYÜZ RENGİ  —  tutamacı sürükleyin", 10,
                                color=C.TEXT_DIM, align=Qt.AlignmentFlag.AlignLeft))
         clr_hdr.addStretch()
-        df_btn = QPushButton("DEFAULT")
-        df_btn.setFixedSize(64, 20)
-        df_btn.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
+        df_btn = QPushButton("VARSAYILAN")
+        df_btn.setFixedSize(76, 22)
+        df_btn.setFont(_font(FONT_UI, 9, QFont.Weight.Bold))
         df_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         df_btn.setStyleSheet(f"""
             QPushButton {{
@@ -1477,9 +1702,9 @@ class CustomizeOverlay(QWidget):
         self._wheel.hue_committed.connect(self._on_wheel_commit)
 
         self._hex_input = QLineEdit(self._sel_color)
-        self._hex_input.setPlaceholderText("#00d4ff   (custom hex colour)")
-        self._hex_input.setFont(QFont("Courier New", 10))
-        self._hex_input.setFixedHeight(28)
+        self._hex_input.setPlaceholderText("#ffb300   (özel hex renk)")
+        self._hex_input.setFont(_font(FONT_MONO, 11))
+        self._hex_input.setFixedHeight(30)
         self._hex_input.setStyleSheet(_fs)
         self._hex_input.textEdited.connect(self._on_hex_edited)
         lay.addWidget(self._hex_input)
@@ -1487,28 +1712,28 @@ class CustomizeOverlay(QWidget):
         lay.addSpacing(6)
         btn_row = QHBoxLayout(); btn_row.setSpacing(8)
 
-        save_btn = QPushButton("▸  APPLY CHANGES")
-        save_btn.setFixedHeight(34)
-        save_btn.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
+        save_btn = QPushButton("▸  DEĞİŞİKLİKLERİ UYGULA")
+        save_btn.setFixedHeight(36)
+        save_btn.setFont(_font(FONT_UI, 11, QFont.Weight.Bold))
         save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         save_btn.setStyleSheet(f"""
             QPushButton {{
                 background: transparent; color: {C.PRI};
-                border: 1px solid {C.PRI_DIM}; border-radius: 3px;
+                border: 1px solid {C.PRI_DIM}; border-radius: 5px;
             }}
             QPushButton:hover {{ background: {C.PRI_GHO}; border: 1px solid {C.PRI}; }}
         """)
         save_btn.clicked.connect(self._save)
         btn_row.addWidget(save_btn)
 
-        cancel_btn = QPushButton("CANCEL")
-        cancel_btn.setFixedHeight(34)
-        cancel_btn.setFont(QFont("Courier New", 9))
+        cancel_btn = QPushButton("VAZGEÇ")
+        cancel_btn.setFixedHeight(36)
+        cancel_btn.setFont(_font(FONT_UI, 11))
         cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         cancel_btn.setStyleSheet(f"""
             QPushButton {{
                 background: transparent; color: {C.TEXT_MED};
-                border: 1px solid {C.BORDER}; border-radius: 3px;
+                border: 1px solid {C.BORDER}; border-radius: 5px;
             }}
             QPushButton:hover {{ color: {C.TEXT}; border-color: {C.BORDER_B}; }}
         """)
@@ -1585,13 +1810,13 @@ class ClipboardPanel(QWidget):
         lay.setSpacing(4)
 
         hdr = QHBoxLayout(); hdr.setSpacing(4)
-        icon_lbl = QLabel("◈  CLIPBOARD DETECTED")
-        icon_lbl.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
+        icon_lbl = QLabel("◈  PANO METNİ ALGILANDI")
+        icon_lbl.setFont(_font(FONT_MONO, 9, QFont.Weight.Bold))
         icon_lbl.setStyleSheet(f"color: {C.ACC2}; background: transparent;")
         hdr.addWidget(icon_lbl); hdr.addStretch()
         x_btn = QPushButton("✕")
-        x_btn.setFixedSize(16, 16)
-        x_btn.setFont(QFont("Courier New", 8))
+        x_btn.setFixedSize(18, 18)
+        x_btn.setFont(_font(FONT_UI, 10))
         x_btn.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent; border: none;")
         x_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         x_btn.clicked.connect(self.hide)
@@ -1599,28 +1824,28 @@ class ClipboardPanel(QWidget):
         lay.addLayout(hdr)
 
         self._preview = QLabel()
-        self._preview.setFont(QFont("Courier New", 8))
+        self._preview.setFont(_font(FONT_MONO, 10))
         self._preview.setStyleSheet(f"""
             color: {C.TEXT}; background: {C.PANEL2};
-            border: 1px solid {C.BORDER}; border-radius: 3px; padding: 4px 6px;
+            border: 1px solid {C.BORDER}; border-radius: 4px; padding: 5px 7px;
         """)
         self._preview.setWordWrap(False)
-        self._preview.setFixedHeight(28)
+        self._preview.setFixedHeight(30)
         lay.addWidget(self._preview)
 
         btn_row = QHBoxLayout(); btn_row.setSpacing(4)
         _bs = (f"QPushButton {{ background: {C.PANEL2}; color: {C.TEXT_MED}; "
-               f"border: 1px solid {C.BORDER}; border-radius: 2px; }}"
+               f"border: 1px solid {C.BORDER}; border-radius: 4px; }}"
                f"QPushButton:hover {{ color: {C.PRI}; border-color: {C.BORDER_B}; }}")
         for label, cmd_fmt in [
-            ("TRANSLATE", "Translate this text to English: {text}"),
-            ("SUMMARISE", "Summarise this: {text}"),
-            ("EXPLAIN",   "Explain this: {text}"),
-            ("FIX",       "Fix grammar and spelling: {text}"),
+            ("ÇEVİR", "Translate this text to English: {text}"),
+            ("ÖZETLE", "Summarise this: {text}"),
+            ("AÇIKLA", "Explain this: {text}"),
+            ("DÜZELT", "Fix grammar and spelling: {text}"),
         ]:
             b = QPushButton(label)
-            b.setFixedHeight(22)
-            b.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
+            b.setFixedHeight(26)
+            b.setFont(_font(FONT_UI, 10, QFont.Weight.Bold))
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.setStyleSheet(_bs)
             b.clicked.connect(lambda _, c=cmd_fmt: self._trigger(c))
@@ -1660,7 +1885,7 @@ class RemoteKeyOverlay(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet(f"""
             RemoteKeyOverlay {{
-                background: rgba(0, 4, 12, 0.95);
+                background: rgba(7, 5, 2, 0.95);
                 border: 1px solid {C.BORDER_B};
                 border-radius: 14px;
             }}
@@ -1674,17 +1899,17 @@ class RemoteKeyOverlay(QWidget):
         lay.setContentsMargins(24, 16, 24, 16)
         lay.setSpacing(5)
 
-        def _lbl(txt, fs=9, bold=False, color=C.PRI,
+        def _lbl(txt, fs=10, bold=False, color=C.PRI,
                  align=Qt.AlignmentFlag.AlignCenter):
             w = QLabel(txt)
             w.setAlignment(align)
-            w.setFont(QFont("Courier New", fs,
+            w.setFont(_font(FONT_UI, fs,
                             QFont.Weight.Bold if bold else QFont.Weight.Normal))
             w.setStyleSheet(f"color: {color}; background: transparent;")
             w.setWordWrap(True)
             return w
 
-        lay.addWidget(_lbl("◈  REMOTE ACCESS", 12, True))
+        lay.addWidget(_lbl("◈  UZAKTAN ERİŞİM", 14, True))
         sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
         sep.setStyleSheet(f"color: {C.BORDER}; margin: 1px 0;")
         lay.addWidget(sep)
@@ -1704,17 +1929,17 @@ class RemoteKeyOverlay(QWidget):
 
         self._update_qr(auto_login_url)
 
-        lay.addWidget(_lbl("Scan with phone camera to connect instantly", 8, color=C.TEXT_DIM))
+        lay.addWidget(_lbl("Anında bağlanmak için telefon kamerasıyla tarayın", 10, color=C.TEXT_DIM))
 
         sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.HLine)
         sep2.setStyleSheet(f"color: {C.BORDER}; margin: 1px 0;")
         lay.addWidget(sep2)
 
-        lay.addWidget(_lbl("Or enter manually:", 7, color=C.TEXT_DIM,
+        lay.addWidget(_lbl("Ya da elle girin:", 9, color=C.TEXT_DIM,
                            align=Qt.AlignmentFlag.AlignLeft))
 
         self._url_lbl = QLabel(self._manual_url)
-        self._url_lbl.setFont(QFont("Courier New", 8))
+        self._url_lbl.setFont(_font(FONT_MONO, 10))
         self._url_lbl.setStyleSheet(f"color: {C.PRI_DIM}; background: transparent;")
         self._url_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._url_lbl.setTextInteractionFlags(
@@ -1722,7 +1947,7 @@ class RemoteKeyOverlay(QWidget):
         lay.addWidget(self._url_lbl)
 
         self._key_lbl = QLabel(key)
-        self._key_lbl.setFont(QFont("Courier New", 28, QFont.Weight.Bold))
+        self._key_lbl.setFont(_font(FONT_MONO, 26, QFont.Weight.Bold))
         self._key_lbl.setStyleSheet(f"""
             color: {C.ACC};
             background: {C.PANEL2};
@@ -1735,15 +1960,15 @@ class RemoteKeyOverlay(QWidget):
         lay.addWidget(self._key_lbl)
 
         self._timer_lbl = QLabel()
-        self._timer_lbl.setFont(QFont("Courier New", 8))
+        self._timer_lbl.setFont(_font(FONT_UI, 10))
         self._timer_lbl.setStyleSheet(f"color: {C.TEXT_MED}; background: transparent;")
         self._timer_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(self._timer_lbl)
 
         btn_row = QHBoxLayout(); btn_row.setSpacing(8)
-        new_btn = QPushButton("NEW KEY")
-        new_btn.setFixedHeight(32)
-        new_btn.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        new_btn = QPushButton("YENİ ANAHTAR")
+        new_btn.setFixedHeight(34)
+        new_btn.setFont(_font(FONT_UI, 10, QFont.Weight.Bold))
         new_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         new_btn.setStyleSheet(f"""
             QPushButton {{
@@ -1755,9 +1980,9 @@ class RemoteKeyOverlay(QWidget):
         new_btn.clicked.connect(self._refresh_key)
         btn_row.addWidget(new_btn)
 
-        close_btn = QPushButton("DISMISS")
-        close_btn.setFixedHeight(32)
-        close_btn.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        close_btn = QPushButton("KAPAT")
+        close_btn.setFixedHeight(34)
+        close_btn.setFont(_font(FONT_UI, 10, QFont.Weight.Bold))
         close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         close_btn.setStyleSheet(f"""
             QPushButton {{
@@ -1803,13 +2028,13 @@ class RemoteKeyOverlay(QWidget):
             )
         except ImportError:
             self._qr_label.setText("pip install\nqrcode[pil]")
-            self._qr_label.setFont(QFont("Courier New", 8))
+            self._qr_label.setFont(_font(FONT_MONO, 9))
             self._qr_label.setStyleSheet(
                 "color: #888; background: white; border-radius: 10px; padding: 4px;"
             )
         except Exception:
             self._qr_label.setText(url[:28])
-            self._qr_label.setFont(QFont("Courier New", 7))
+            self._qr_label.setFont(_font(FONT_MONO, 8))
             self._qr_label.setStyleSheet(
                 f"color: {C.PRI}; background: white; border-radius: 10px; padding: 4px;"
             )
@@ -1817,14 +2042,14 @@ class RemoteKeyOverlay(QWidget):
     def _tick(self):
         remaining = max(0, int(self._expiry - time.time()))
         m, s = divmod(remaining, 60)
-        self._timer_lbl.setText(f"Key expires in  {m:02d}:{s:02d}")
+        self._timer_lbl.setText(f"Anahtarın süresi:  {m:02d}:{s:02d}")
         if remaining == 0:
             self._do_close()
 
     def mark_connected(self) -> None:
         """Call from any thread when a phone successfully connects."""
         self._ctimer.stop()
-        self._key_lbl.setText("CONNECTED")
+        self._key_lbl.setText("BAĞLANDI")
         self._key_lbl.setStyleSheet(f"""
             color: {C.GREEN};
             background: rgba(34,197,94,0.08);
@@ -1834,11 +2059,11 @@ class RemoteKeyOverlay(QWidget):
             letter-spacing: 4px;
         """)
         self._qr_label.setText("✓")
-        self._qr_label.setFont(QFont("Courier New", 54, QFont.Weight.Bold))
+        self._qr_label.setFont(_font(FONT_DISPLAY, 48, QFont.Weight.Bold))
         self._qr_label.setStyleSheet(
             "color: #00ff88; background: #001a0d; border-radius: 10px;"
         )
-        self._timer_lbl.setText("Phone connected — Mehmet ready")
+        self._timer_lbl.setText("Telefon bağlandı — Mehmet hazır")
         self._timer_lbl.setStyleSheet(f"color: {C.GREEN}; background: transparent;")
 
     def _refresh_key(self):
@@ -1875,526 +2100,6 @@ class RemoteKeyOverlay(QWidget):
         self.closed.emit()
 
 
-class McpToolsDialog(QWidget):
-    """MCP Eklentisine ait araçların şemalarını ve açıklamalarını gösteren modal pencere."""
-
-    closed = pyqtSignal()
-    _OW, _OH = 520, 430
-
-    def __init__(self, plugin_name: str, tools: list[dict], parent=None):
-        super().__init__(parent)
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setStyleSheet(f"""
-            McpToolsDialog {{
-                background: rgba(0, 8, 16, 250);
-                border: 1px solid {C.PRI};
-                border-radius: 8px;
-            }}
-        """)
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(16, 14, 16, 14)
-        lay.setSpacing(8)
-
-        # Header
-        hdr = QHBoxLayout()
-        title = QLabel(f"◈  ARAÇLAR: {plugin_name.upper()}")
-        title.setFont(QFont("Courier New", 10, QFont.Weight.Bold))
-        title.setStyleSheet(f"color: {C.PRI}; background: transparent;")
-        hdr.addWidget(title)
-        hdr.addStretch()
-
-        x_btn = QPushButton("✕")
-        x_btn.setFixedSize(20, 20)
-        x_btn.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
-        x_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        x_btn.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent; border: none;")
-        x_btn.clicked.connect(self._do_close)
-        hdr.addWidget(x_btn)
-        lay.addLayout(hdr)
-
-        sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet(f"color: {C.BORDER}; margin: 2px 0;")
-        lay.addWidget(sep)
-
-        # Tools list scroll area
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setStyleSheet(f"""
-            QScrollArea {{ background: transparent; border: none; }}
-            QScrollBar:vertical {{ background: {C.BG}; width: 6px; border: none; }}
-            QScrollBar::handle:vertical {{ background: {C.BORDER_B}; border-radius: 3px; min-height: 16px; }}
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; border: none; }}
-        """)
-
-        container = QWidget()
-        container.setStyleSheet("background: transparent;")
-        c_lay = QVBoxLayout(container)
-        c_lay.setContentsMargins(0, 0, 4, 0)
-        c_lay.setSpacing(8)
-
-        if not tools:
-            no_lbl = QLabel("Bu eklentide kayıtlı araç bulunamadı.\n(Bağlantı test edilmemiş veya sunucu araç sağlamıyor)")
-            no_lbl.setFont(QFont("Courier New", 8))
-            no_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            no_lbl.setStyleSheet(f"color: {C.TEXT_DIM}; padding: 20px 0;")
-            c_lay.addWidget(no_lbl)
-        else:
-            for t in tools:
-                card = QWidget()
-                card.setStyleSheet(f"""
-                    background: {C.PANEL2};
-                    border: 1px solid {C.BORDER_A};
-                    border-radius: 4px;
-                    padding: 6px;
-                """)
-                card_lay = QVBoxLayout(card)
-                card_lay.setContentsMargins(8, 6, 8, 6)
-                card_lay.setSpacing(4)
-
-                t_name = QLabel(f"⚡ {t.get('name')}")
-                t_name.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
-                t_name.setStyleSheet(f"color: {C.WHITE}; background: transparent;")
-                card_lay.addWidget(t_name)
-
-                desc_txt = t.get('description', '')
-                if desc_txt:
-                    t_desc = QLabel(desc_txt)
-                    t_desc.setFont(QFont("Courier New", 8))
-                    t_desc.setWordWrap(True)
-                    t_desc.setStyleSheet(f"color: {C.TEXT_MED}; background: transparent;")
-                    card_lay.addWidget(t_desc)
-
-                params = t.get('parameters', {}).get('properties', {})
-                if params:
-                    params_txt = "Parametreler:\n" + "\n".join([f" • {k} ({v.get('type','').lower()}): {v.get('description','')}" for k, v in params.items()])
-                    t_params = QLabel(params_txt)
-                    t_params.setFont(QFont("Courier New", 7))
-                    t_params.setWordWrap(True)
-                    t_params.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent; padding-top: 2px;")
-                    card_lay.addWidget(t_params)
-
-                c_lay.addWidget(card)
-
-        c_lay.addStretch()
-        scroll.setWidget(container)
-        lay.addWidget(scroll)
-
-        close_btn = QPushButton("KAPAT")
-        close_btn.setFixedHeight(28)
-        close_btn.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
-        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        close_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: transparent; color: {C.TEXT_MED};
-                border: 1px solid {C.BORDER}; border-radius: 3px;
-            }}
-            QPushButton:hover {{ color: {C.PRI}; border-color: {C.PRI_DIM}; }}
-        """)
-        close_btn.clicked.connect(self._do_close)
-        lay.addWidget(close_btn)
-
-    def _do_close(self):
-        self.hide()
-        self.closed.emit()
-
-
-class McpOverlay(QWidget):
-    """
-    Floating overlay for managing MCP (Model Context Protocol) plugins.
-    Supports GitHub URLs, npx/py commands, SSE endpoints, and Claude MCP configs.
-    """
-
-    closed = pyqtSignal()
-    plugins_updated = pyqtSignal()
-    _install_status_sig = pyqtSignal(bool, str)
-
-    _OW, _OH = 660, 530
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setStyleSheet(f"""
-            McpOverlay {{
-                background: rgba(0, 6, 12, 248);
-                border: 1px solid {C.BORDER_B};
-                border-radius: 8px;
-            }}
-        """)
-        self._tools_dialog: McpToolsDialog | None = None
-        self._install_status_sig.connect(self._on_install_finished)
-
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(18, 14, 18, 14)
-        lay.setSpacing(8)
-
-        # Header Row
-        hdr = QHBoxLayout(); hdr.setSpacing(6)
-        icon_lbl = QLabel("◈  MCP EKLENTİ YÖNETİCİSİ")
-        icon_lbl.setFont(QFont("Courier New", 11, QFont.Weight.Bold))
-        icon_lbl.setStyleSheet(f"color: {C.PRI}; background: transparent;")
-        hdr.addWidget(icon_lbl)
-        hdr.addStretch()
-
-        x_btn = QPushButton("✕")
-        x_btn.setFixedSize(22, 22)
-        x_btn.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
-        x_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        x_btn.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent; border: none;")
-        x_btn.clicked.connect(self._do_close)
-        hdr.addWidget(x_btn)
-        lay.addLayout(hdr)
-
-        sub_lbl = QLabel("GitHub linki, npx/py komutu, SSE URL veya Claude/MCP JSON'u yapıştırarak dilediğiniz eklentiyi yükleyin.")
-        sub_lbl.setFont(QFont("Courier New", 7))
-        sub_lbl.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
-        lay.addWidget(sub_lbl)
-
-        sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet(f"color: {C.BORDER}; margin: 2px 0;")
-        lay.addWidget(sep)
-
-        # Add section
-        add_box = QWidget()
-        add_box.setStyleSheet(f"background: {C.PANEL}; border: 1px solid {C.BORDER}; border-radius: 4px; padding: 6px;")
-        add_lay = QVBoxLayout(add_box)
-        add_lay.setContentsMargins(8, 6, 8, 6)
-        add_lay.setSpacing(6)
-
-        in_hdr = QLabel("YENİ EKLENTİ YÜKLE / BAĞLA")
-        in_hdr.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
-        in_hdr.setStyleSheet(f"color: {C.TEXT_MED}; background: transparent;")
-        add_lay.addWidget(in_hdr)
-
-        in_row = QHBoxLayout(); in_row.setSpacing(6)
-        self._url_input = QLineEdit()
-        self._url_input.setPlaceholderText("GitHub URL, npx/py komutu, SSE URL veya JSON girin...")
-        self._url_input.setFont(QFont("Courier New", 8))
-        self._url_input.setFixedHeight(28)
-        self._url_input.setStyleSheet(f"""
-            QLineEdit {{
-                background: #000d14; color: {C.WHITE};
-                border: 1px solid {C.BORDER}; border-radius: 3px; padding: 2px 6px;
-            }}
-            QLineEdit:focus {{ border: 1px solid {C.PRI}; }}
-        """)
-        in_row.addWidget(self._url_input, stretch=3)
-
-        self._name_input = QLineEdit()
-        self._name_input.setPlaceholderText("İsim (İsteğe bağlı)")
-        self._name_input.setFont(QFont("Courier New", 8))
-        self._name_input.setFixedHeight(28)
-        self._name_input.setStyleSheet(f"""
-            QLineEdit {{
-                background: #000d14; color: {C.WHITE};
-                border: 1px solid {C.BORDER}; border-radius: 3px; padding: 2px 6px;
-            }}
-            QLineEdit:focus {{ border: 1px solid {C.PRI}; }}
-        """)
-        in_row.addWidget(self._name_input, stretch=1)
-
-        self._install_btn = QPushButton("▸ YÜKLE")
-        self._install_btn.setFixedHeight(28)
-        self._install_btn.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
-        self._install_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._install_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: #001f2e; color: {C.PRI};
-                border: 1px solid {C.PRI_DIM}; border-radius: 3px; padding: 0 10px;
-            }}
-            QPushButton:hover {{ background: {C.PRI_GHO}; border-color: {C.PRI}; }}
-        """)
-        self._install_btn.clicked.connect(self._start_install)
-        in_row.addWidget(self._install_btn)
-        add_lay.addLayout(in_row)
-
-        self._status_lbl = QLabel("")
-        self._status_lbl.setFont(QFont("Courier New", 7))
-        self._status_lbl.setStyleSheet("background: transparent;")
-        self._status_lbl.hide()
-        add_lay.addWidget(self._status_lbl)
-
-        lay.addWidget(add_box)
-
-        # List Section
-        list_hdr = QHBoxLayout()
-        list_title = QLabel("YÜKLÜ MCP EKLENTİLERİ")
-        list_title.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
-        list_title.setStyleSheet(f"color: {C.TEXT_MED}; background: transparent;")
-        list_hdr.addWidget(list_title)
-        list_hdr.addStretch()
-
-        ref_btn = QPushButton("🔄 YENİLE")
-        ref_btn.setFont(QFont("Courier New", 7))
-        ref_btn.setFixedHeight(20)
-        ref_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        ref_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: transparent; color: {C.TEXT_DIM};
-                border: 1px solid {C.BORDER}; border-radius: 2px; padding: 0 6px;
-            }}
-            QPushButton:hover {{ color: {C.TEXT}; border-color: {C.BORDER_B}; }}
-        """)
-        ref_btn.clicked.connect(self._refresh_list)
-        list_hdr.addWidget(ref_btn)
-        lay.addLayout(list_hdr)
-
-        self._scroll = QScrollArea()
-        self._scroll.setWidgetResizable(True)
-        self._scroll.setStyleSheet(f"""
-            QScrollArea {{ background: transparent; border: 1px solid {C.BORDER}; border-radius: 4px; }}
-            QScrollBar:vertical {{ background: {C.BG}; width: 6px; border: none; }}
-            QScrollBar::handle:vertical {{ background: {C.BORDER_B}; border-radius: 3px; min-height: 16px; }}
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; border: none; }}
-        """)
-
-        self._list_container = QWidget()
-        self._list_container.setStyleSheet("background: transparent;")
-        self._list_lay = QVBoxLayout(self._list_container)
-        self._list_lay.setContentsMargins(6, 6, 6, 6)
-        self._list_lay.setSpacing(6)
-        self._scroll.setWidget(self._list_container)
-        lay.addWidget(self._scroll, stretch=1)
-
-        # Footer Row
-        ftr = QHBoxLayout()
-        info_lbl = QLabel("Aktif MCP eklentilerinin araçları Gemini Live oturumuna otomatik aktarılır.")
-        info_lbl.setFont(QFont("Courier New", 7))
-        info_lbl.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
-        ftr.addWidget(info_lbl)
-        ftr.addStretch()
-
-        done_btn = QPushButton("TAMAM")
-        done_btn.setFixedHeight(26)
-        done_btn.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
-        done_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        done_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: {C.PANEL}; color: {C.PRI};
-                border: 1px solid {C.PRI_DIM}; border-radius: 3px; padding: 0 14px;
-            }}
-            QPushButton:hover {{ background: {C.PRI_GHO}; border-color: {C.PRI}; }}
-        """)
-        done_btn.clicked.connect(self._do_close)
-        ftr.addWidget(done_btn)
-        lay.addLayout(ftr)
-
-        self._refresh_list()
-
-    def _start_install(self):
-        raw_text = self._url_input.text().strip()
-        custom_name = self._name_input.text().strip()
-        if not raw_text:
-            self._set_status(False, "Lütfen bir link, komut veya JSON girin.")
-            return
-
-        self._install_btn.setEnabled(False)
-        self._set_status(True, "⏳ Eklenti indiriliyor / yapılandırılıyor, lütfen bekleyin...", is_busy=True)
-
-        def _worker():
-            from core.mcp_manager import mcp_manager
-            ok, msg, _ = mcp_manager.install_from_source(raw_text, custom_name)
-            self._install_status_sig.emit(ok, msg)
-
-        threading.Thread(target=_worker, daemon=True).start()
-
-    def _on_install_finished(self, ok: bool, msg: str):
-        self._install_btn.setEnabled(True)
-        if ok:
-            self._url_input.clear()
-            self._name_input.clear()
-            self._set_status(True, f"✓ {msg}")
-            self._refresh_list()
-            self.plugins_updated.emit()
-        else:
-            self._set_status(False, f"✕ Hata: {msg}")
-
-    def _set_status(self, ok: bool, text: str, is_busy: bool = False):
-        self._status_lbl.setText(text)
-        if is_busy:
-            color = C.ACC2
-        elif ok:
-            color = C.GREEN
-        else:
-            color = C.RED
-        self._status_lbl.setStyleSheet(f"color: {color}; background: transparent; padding-top: 2px;")
-        self._status_lbl.show()
-
-    def _refresh_list(self):
-        while self._list_lay.count():
-            item = self._list_lay.takeAt(0)
-            w = item.widget()
-            if w:
-                w.deleteLater()
-
-        from core.mcp_manager import mcp_manager
-        plugins = mcp_manager.plugins
-
-        if not plugins:
-            empty_lbl = QLabel("Henüz yüklü MCP eklentisi bulunmuyor.\nYukarıdaki alana bir GitHub linki veya npx/py komutu yapıştırarak ekleyin.")
-            empty_lbl.setFont(QFont("Courier New", 8))
-            empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            empty_lbl.setStyleSheet(f"color: {C.TEXT_DIM}; padding: 30px 0;")
-            self._list_lay.addWidget(empty_lbl)
-            self._list_lay.addStretch()
-            return
-
-        for p in plugins:
-            card = self._create_plugin_card(p)
-            self._list_lay.addWidget(card)
-
-        self._list_lay.addStretch()
-
-    def _create_plugin_card(self, p: dict) -> QWidget:
-        card = QWidget()
-        card.setStyleSheet(f"""
-            background: {C.PANEL2};
-            border: 1px solid {C.BORDER_A};
-            border-radius: 4px;
-        """)
-        c_lay = QVBoxLayout(card)
-        c_lay.setContentsMargins(10, 8, 10, 8)
-        c_lay.setSpacing(5)
-
-        # Row 1: Title, Badges, Toggle
-        top_row = QHBoxLayout(); top_row.setSpacing(6)
-
-        p_name = QLabel(p.get("name", "MCP Plugin"))
-        p_name.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
-        p_name.setStyleSheet(f"color: {C.WHITE}; background: transparent;")
-        top_row.addWidget(p_name)
-
-        # Transport Badge
-        trans = p.get("transport", "stdio").upper()
-        t_badge = QLabel(f"[{trans}]")
-        t_badge.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
-        badge_col = C.ACC2 if trans == "SSE" else C.PRI
-        t_badge.setStyleSheet(f"color: {badge_col}; background: #00121e; border: 1px solid {C.BORDER}; border-radius: 2px; padding: 1px 4px;")
-        top_row.addWidget(t_badge)
-
-        # Tool Count Badge
-        tool_count = len(p.get("tools", []))
-        tool_badge = QLabel(f"{tool_count} Araç")
-        tool_badge.setFont(QFont("Courier New", 7))
-        tool_badge.setStyleSheet(f"color: {C.TEXT_MED}; background: #001a14; border: 1px solid {C.BORDER}; border-radius: 2px; padding: 1px 4px;")
-        top_row.addWidget(tool_badge)
-
-        top_row.addStretch()
-
-        # Toggle Button
-        is_on = p.get("enabled", True)
-        tog_btn = QPushButton("AKTİF" if is_on else "PASİF")
-        tog_btn.setFixedSize(56, 20)
-        tog_btn.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
-        tog_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        if is_on:
-            tog_btn.setStyleSheet(f"background: #002612; color: {C.GREEN}; border: 1px solid {C.GREEN_D}; border-radius: 3px;")
-        else:
-            tog_btn.setStyleSheet(f"background: #1a0006; color: {C.MUTED_C}; border: 1px solid {C.BORDER}; border-radius: 3px;")
-        tog_btn.clicked.connect(lambda _, pid=p.get("id"), state=is_on: self._toggle_plugin(pid, not state))
-        top_row.addWidget(tog_btn)
-        c_lay.addLayout(top_row)
-
-        # Row 2: Source info
-        src_text = p.get("source") or (p.get("command", "") + " " + " ".join(p.get("args", []))) or p.get("url", "")
-        if len(src_text) > 75:
-            src_text = src_text[:72] + "..."
-        src_lbl = QLabel(src_text)
-        src_lbl.setFont(QFont("Courier New", 7))
-        src_lbl.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
-        c_lay.addWidget(src_lbl)
-
-        # Row 3: Action Buttons
-        act_row = QHBoxLayout(); act_row.setSpacing(6)
-        act_row.addStretch()
-
-        tools_btn = QPushButton("🔍 ARAÇLAR")
-        tools_btn.setFixedHeight(22)
-        tools_btn.setFont(QFont("Courier New", 7))
-        tools_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        tools_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: transparent; color: {C.TEXT_MED};
-                border: 1px solid {C.BORDER}; border-radius: 2px; padding: 0 6px;
-            }}
-            QPushButton:hover {{ color: {C.PRI}; border-color: {C.PRI_DIM}; }}
-        """)
-        tools_btn.clicked.connect(lambda _, pl=p: self._view_tools(pl))
-        act_row.addWidget(tools_btn)
-
-        test_btn = QPushButton("🔄 TEST ET")
-        test_btn.setFixedHeight(22)
-        test_btn.setFont(QFont("Courier New", 7))
-        test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        test_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: transparent; color: {C.TEXT_MED};
-                border: 1px solid {C.BORDER}; border-radius: 2px; padding: 0 6px;
-            }}
-            QPushButton:hover {{ color: {C.ACC2}; border-color: {C.ACC2}; }}
-        """)
-        test_btn.clicked.connect(lambda _, pl=p: self._test_plugin(pl))
-        act_row.addWidget(test_btn)
-
-        del_btn = QPushButton("🗑 SİL")
-        del_btn.setFixedHeight(22)
-        del_btn.setFont(QFont("Courier New", 7))
-        del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        del_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: transparent; color: {C.MUTED_C};
-                border: 1px solid {C.BORDER}; border-radius: 2px; padding: 0 6px;
-            }}
-            QPushButton:hover {{ background: #26000c; border-color: {C.RED}; }}
-        """)
-        del_btn.clicked.connect(lambda _, pid=p.get("id"): self._delete_plugin(pid))
-        act_row.addWidget(del_btn)
-
-        c_lay.addLayout(act_row)
-        return card
-
-    def _toggle_plugin(self, plugin_id: str, new_state: bool):
-        from core.mcp_manager import mcp_manager
-        mcp_manager.toggle_plugin(plugin_id, new_state)
-        self._refresh_list()
-        self.plugins_updated.emit()
-
-    def _delete_plugin(self, plugin_id: str):
-        from core.mcp_manager import mcp_manager
-        mcp_manager.remove_plugin(plugin_id)
-        self._refresh_list()
-        self.plugins_updated.emit()
-
-    def _view_tools(self, plugin: dict):
-        if self._tools_dialog:
-            self._tools_dialog.hide()
-        dialog = McpToolsDialog(plugin.get("name", "Eklenti"), plugin.get("tools", []), parent=self)
-        dw, dh = McpToolsDialog._OW, McpToolsDialog._OH
-        dialog.setGeometry(
-            (self.width() - dw) // 2,
-            (self.height() - dh) // 2,
-            dw, dh
-        )
-        dialog.show()
-        self._tools_dialog = dialog
-
-    def _test_plugin(self, plugin: dict):
-        self._set_status(True, f"⏳ '{plugin.get('name')}' test ediliyor...", is_busy=True)
-
-        def _worker():
-            from core.mcp_manager import mcp_manager
-            tools, err = mcp_manager.sync_fetch_tools(plugin)
-            if err:
-                self._install_status_sig.emit(False, f"Test başarısız: {err}")
-            else:
-                self._install_status_sig.emit(True, f"Test başarılı! {len(tools)} araç aktif.")
-
-        threading.Thread(target=_worker, daemon=True).start()
-
-    def _do_close(self):
-        self.hide()
-        self.closed.emit()
-
-
 class MainWindow(QMainWindow):
     _log_sig        = pyqtSignal(str)
     _state_sig      = pyqtSignal(str)
@@ -2405,6 +2110,9 @@ class MainWindow(QMainWindow):
     _cam_frame_sig  = pyqtSignal(bytes)      # live camera frame → HUD area
     _clipboard_sig  = pyqtSignal(str)        # clipboard text changed (thread-safe)
     _serious_sig    = pyqtSignal(bool)       # toggle serious mode (thread-safe)
+    _browser_sig    = pyqtSignal(str)        # NAVİGATÖR komutları (thread-safe)
+    _page_text_sig  = pyqtSignal(str)        # sekme metni okuma yanıtı (thread-safe)
+    _watch_sig      = pyqtSignal(bool)       # izleme modu rozeti (thread-safe)
 
     def __init__(self, face_path: str):
         super().__init__()
@@ -2417,11 +2125,14 @@ class MainWindow(QMainWindow):
         _display = self._assistant_name.upper()
 
         # Kayıtlı UI rengini panel/stylesheet'ler kurulmadan ÖNCE uygula
+        # Eski cyan varsayılanı özel seçim sayma — yeni altın varsayılana göçür
         _ui_color = (_cfg.get("ui_color") or "").strip()
+        if _ui_color.lower() == _LEGACY_DEFAULT_COLOR:
+            _ui_color = ""
         if _ui_color and _ui_color.lower() != DEFAULT_UI_COLOR:
             apply_ui_accent(_ui_color)
 
-        self.setWindowTitle(f"{_display} — Sürüm 3.21.0")
+        self.setWindowTitle(f"{_display} — BaranT  v{APP_VERSION}")
         self.setMinimumSize(_MIN_W, _MIN_H)
         self.resize(_DEFAULT_W, _DEFAULT_H)
 
@@ -2434,21 +2145,32 @@ class MainWindow(QMainWindow):
         self.on_text_command   = None
         self.on_remote_clicked = None   # callable: () -> (url, key) | None
         self.on_interrupt      = None   # callable: () -> None — stop Mehmet mid-speech
-        self.on_mcp_updated    = None   # callable: () -> None — reload tools when plugins change
         self._muted            = False
         self._current_file: str | None = None
         self._remote_overlay: RemoteKeyOverlay | None = None
         self._customize_overlay: CustomizeOverlay | None = None
-        self._mcp_overlay: McpOverlay | None = None
+        # NAVİGATÖR (dahili tarayıcı) durumu — tam pencere katmanı
+        self._browser = None                     # BrowserPanel (tembel kurulum)
+        self._browser_page: QWidget | None = None
+        self._browser_open = False
+        self._browser_fade: QPropertyAnimation | None = None
+        self._browser_curtain = None            # sinematik geçiş perdesi
+        self._page_waiters: dict[str, dict] = {}   # okuma istekleri (token→Event)
 
         central = QWidget()
         central.setStyleSheet(f"background: {C.BG};")
+        self._transition_effect = QGraphicsOpacityEffect(central)
+        self._transition_effect.setOpacity(1.0)
+        central.setGraphicsEffect(self._transition_effect)
+        self._transition_anim: QPropertyAnimation | None = None
+        self._panel_sequence: QSequentialAnimationGroup | None = None
         self.setCentralWidget(central)
 
         root = QVBoxLayout(central)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-        root.addWidget(self._build_header())
+        self._header = self._build_header()
+        root.addWidget(self._header)
 
         body = QHBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
@@ -2464,19 +2186,19 @@ class MainWindow(QMainWindow):
 
         # Live camera container — replaces HUD when camera stream is active
         _cam_cont = QWidget()
-        _cam_cont.setStyleSheet("background: #000308;")
+        _cam_cont.setStyleSheet(f"background: {C.DARK};")
         _cam_v = QVBoxLayout(_cam_cont)
         _cam_v.setContentsMargins(0, 0, 0, 0)
         _cam_v.setSpacing(0)
         _cam_hdr = QHBoxLayout()
         _cam_hdr.setContentsMargins(8, 5, 8, 5)
         _cam_title = QLabel("◈  KAMERA ALANI")
-        _cam_title.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        _cam_title.setFont(_font(FONT_MONO, 10, QFont.Weight.Bold))
         _cam_title.setStyleSheet(f"color: {C.PRI}; background: transparent;")
         _cam_hdr.addWidget(_cam_title)
         _cam_hdr.addStretch()
         _cam_x = QPushButton("✕  KAPAT")
-        _cam_x.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        _cam_x.setFont(_font(FONT_UI, 10, QFont.Weight.Bold))
         _cam_x.setCursor(Qt.CursorShape.PointingHandCursor)
         _cam_x.setStyleSheet(f"""
             QPushButton {{
@@ -2496,8 +2218,8 @@ class MainWindow(QMainWindow):
         )
         _cam_v.addWidget(self._cam_live_lbl, stretch=1)
 
-        # Serious Mode Canvas (3D World + Harley Sawyer GIF)
-        self.serious_canvas = SeriousModeCanvas()
+        # MehmetNEO için sinematik operasyon merkezi
+        self.serious_canvas = NeoCanvas()
 
         # Stack: 0 = animated HUD, 1 = live camera, 2 = serious mode canvas
         self._hud_cam_stack = QStackedWidget()
@@ -2526,7 +2248,8 @@ class MainWindow(QMainWindow):
         body.addWidget(self._right_panel, stretch=0)
 
         root.addLayout(body, stretch=1)
-        root.addWidget(self._build_footer())
+        self._footer = self._build_footer()
+        root.addWidget(self._footer)
 
         # Quick-access drawer (floating overlay, built after central widget layout is done)
         self._quick_drawer = self._build_quick_drawer()
@@ -2554,6 +2277,9 @@ class MainWindow(QMainWindow):
         self._cam_frame_sig.connect(self._on_cam_frame)
         self._clipboard_sig.connect(self._show_clipboard_panel)
         self._serious_sig.connect(self._on_serious_mode_toggle)
+        self._browser_sig.connect(self._on_browser_command)
+        self._page_text_sig.connect(self._on_page_text)
+        self._watch_sig.connect(self._on_watch_badge)
         self._cam_stop = threading.Event()
 
         # Camera preview overlay (child of central widget, positioned in resizeEvent)
@@ -2575,39 +2301,110 @@ class MainWindow(QMainWindow):
         sc_full.activated.connect(self._toggle_fullscreen)
         sc_intr = QShortcut(QKeySequence("Escape"), self)
         sc_intr.activated.connect(self._do_interrupt)
+        # NAVİGATÖR'ü erken kur (tam pencere katmanı olarak)
+        self._ensure_browser()
+        sc_br = QShortcut(QKeySequence("F6"), self)
+        sc_br.activated.connect(self.toggle_browser)
+        # JARVIS açılış perdesi: MEHMET alanı perde arkasından aydınlanır
+        QTimer.singleShot(60, lambda: self._play_curtain(
+            opening=True, label=self._assistant_name.upper()))
+        QTimer.singleShot(160, self._animate_panels)
 
     def _on_serious_mode_toggle(self, is_serious: bool):
+        """Sinematik geçiş: perde kapanır → tema değişir → perde açılır."""
+        if is_serious == self.is_serious_mode:
+            return
+        if self._transition_anim is not None:
+            self._transition_anim.stop()
+
+        # 1) JARVIS perdesi: MEHMET alanını kapat (kırmızı, ciddi mod başlığı)
+        self._play_curtain(
+            opening=False,
+            label=("MEHMETNEO" if is_serious else "MEHMET"))
+
+        # 2) perde kapanırken arka planda temayı uygula, sonra perdeyi aç
+        def _swap():
+            self._apply_serious_mode(is_serious)
+            self._play_curtain(opening=True,
+                               label=("MEHMETNEO" if is_serious else "MEHMET"))
+            # 3) paneller teker teker yeniden aydınlanır
+            self._animate_panels()
+        QTimer.singleShot(430, _swap)
+
+    def _finish_mode_transition(self, is_serious: bool) -> None:
+        self._apply_serious_mode(is_serious)
+        fade_in = QPropertyAnimation(self._transition_effect, b"opacity", self)
+        fade_in.setDuration(480)
+        fade_in.setStartValue(0.0)
+        fade_in.setEndValue(1.0)
+        fade_in.setEasingCurve(QEasingCurve.Type.OutCubic)
+        fade_in.finished.connect(self._animate_panels)
+        self._transition_anim = fade_in
+        fade_in.start()
+
+    def _animate_panels(self) -> None:
+        """Ana yüzeyleri kısa gecikmelerle görünür kılar."""
+        if self._panel_sequence is not None:
+            self._panel_sequence.stop()
+        panels = (self._header, self._left_panel, self._center_split,
+                  self._right_panel, self._footer)
+        effects: list[QGraphicsOpacityEffect] = []
+        for panel in panels:
+            effect = QGraphicsOpacityEffect(panel)
+            effect.setOpacity(0.0)
+            panel.setGraphicsEffect(effect)
+            effects.append(effect)
+
+        sequence = QSequentialAnimationGroup(self)
+        for effect in effects:
+            animation = QPropertyAnimation(effect, b"opacity", sequence)
+            animation.setDuration(170)
+            animation.setStartValue(0.0)
+            animation.setEndValue(1.0)
+            animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+            sequence.addAnimation(animation)
+        self._panel_sequence = sequence
+        sequence.start()
+
+    def _apply_serious_mode(self, is_serious: bool):
         """Slot — ciddi mod/normal mod geçişini ana thread'de uygular."""
         self.is_serious_mode = is_serious
         old_palette = current_palette()
         if is_serious:
+            # Ciddi mod öncesi paleti hatırla → normal moda dönerken geri yükle
+            self._pre_serious_color = getattr(self, "_custom_color", "") or ""
             apply_ui_accent("#ff003c")
             new_palette = current_palette()
             retheme_all_widgets(old_palette, new_palette)
-            self.setWindowTitle("MehmetNEO (CİDDİ MOD) — GLM 5.2")
+            self.setWindowTitle("MehmetNEO — BaranT Ciddi Mod")
             self._title_lbl.setText("MehmetNEO")
-            self._sub_lbl.setText("CİDDİ MOD // MODEL: GLM 5.2")
+            self._sub_lbl.setText("BARANT // CİDDİ MOD PROTOKOLÜ")
             self._title_lbl.setStyleSheet(f"color: {C.PRI}; background: transparent;")
             self._sub_lbl.setStyleSheet(f"color: {C.PRI_DIM}; background: transparent;")
             self._hud_cam_stack.setCurrentIndex(2)
-            self._log.append_log("SYS: ═══════════════════════════════════")
-            self._log.append_log("SYS: CİDDİ MOD AKTİF")
-            self._log.append_log("SYS: MODEL: GLM 5.2")
-            self._log.append_log("SYS: KİŞİLİK: MehmetNEO")
-            self._log.append_log("SYS: ═══════════════════════════════════")
+            self.serious_canvas.set_state(self.hud.state, self.hud.speaking)
+            # Ciddi modda NAVİGATÖR kapatılır (tüm dikkat operasyona odaklanır)
+            if self._browser_open:
+                self.close_browser()
+            self._log.append_log("SİSTEM: MehmetNEO ciddi modu etkin.")
+            self._log.append_log("SİSTEM: BaranT operasyon arayüzü hazır.")
             QApplication.beep()
         else:
-            apply_ui_accent(DEFAULT_UI_COLOR)
+            restore = getattr(self, "_pre_serious_color", "")
+            if restore:
+                apply_ui_accent(restore)
+            else:
+                apply_ui_accent(DEFAULT_UI_COLOR)
             new_palette = current_palette()
             retheme_all_widgets(old_palette, new_palette)
             _disp = self._assistant_name.upper()
-            self.setWindowTitle(f"{_disp} — Sürüm 3.21.0")
+            self.setWindowTitle(f"{_disp} — BaranT  v{APP_VERSION}")
             self._title_lbl.setText(_disp)
-            self._sub_lbl.setText("PC için AI")
+            self._sub_lbl.setText("BARANT // KİŞİSEL YAPAY ZEKÂ")
             self._title_lbl.setStyleSheet(f"color: {C.PRI}; background: transparent;")
             self._sub_lbl.setStyleSheet(f"color: {C.PRI_DIM}; background: transparent;")
             self._hud_cam_stack.setCurrentIndex(0)
-            self._log.append_log("SYS: NORMAL MOD AKTİF. Mehmet AI çevrimiçi.")
+            self._log.append_log("SİSTEM: Normal mod etkin. Mehmet çevrimiçi.")
 
     def _show_camera_frame(self, img_bytes: bytes):
         """Slot — display camera preview overlay (main thread)."""
@@ -3066,6 +2863,10 @@ class MainWindow(QMainWindow):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        if self._browser_open:
+            self._position_browser()
+        if self._browser_curtain is not None:
+            self._browser_curtain.track_parent()
         cw = self.centralWidget()
         if self._overlay and self._overlay.isVisible():
             ow, oh = 460, 390
@@ -3143,41 +2944,482 @@ class MainWindow(QMainWindow):
             elapsed = time.time() - boot_t
             h = int(elapsed // 3600)
             m = int((elapsed % 3600) // 60)
-            self._uptime_lbl.setText(f"UP  {h:02d}:{m:02d}")
+            self._uptime_lbl.setText(f"ÇALIŞMA  {h:02d}:{m:02d}")
         except Exception:
-            self._uptime_lbl.setText("UP  --:--")
+            self._uptime_lbl.setText("ÇALIŞMA  --:--")
 
         try:
             proc_count = len(psutil.pids())
-            self._proc_lbl.setText(f"PROC  {proc_count}")
+            self._proc_lbl.setText(f"İŞLEM  {proc_count}")
         except Exception:
-            self._proc_lbl.setText("PROC  --")
+            self._proc_lbl.setText("İŞLEM  --")
 
+
+    # ------------------------------------------------------------------
+    # NAVİGATÖR — dahili tarayıcı (browser/panel.py) — tam pencere katmanı
+    # ------------------------------------------------------------------
+    def _ensure_browser(self) -> None:
+        """NAVİGATÖR'ü (tek seferlik) kurar: centralWidget üzerinde tam boy
+        yüzen katman. Ana arayüz altında olduğu gibi kalır — geçişte panel
+        animasyonları tekrar oynatılmaz."""
+        if self._browser is not None or self._browser_page is not None:
+            return
+        try:
+            from browser.panel import BrowserPanel   # ui ↔ browser döngüsünü kırmak için geç import
+            page = QWidget(self.centralWidget())
+            page.setObjectName("NavigatorPage")
+            page.setStyleSheet(f"background: {C.BG};")
+            pl = QVBoxLayout(page)
+            pl.setContentsMargins(0, 0, 0, 0)
+            panel = BrowserPanel(page)
+            panel.exit_requested.connect(self.close_browser)
+            panel.vpn_alert.connect(self._on_vpn_alert)
+            pl.addWidget(panel)
+        except Exception as e:
+            print(f"[Navigator] kurulamadı: {e}")
+            return
+        page.hide()
+        self._browser = panel
+        self._browser_page = page
+
+    def _on_watch_badge(self, on: bool) -> None:
+        """İzleme modu canlı rozeti — köşede nabız atan gösterge."""
+        import random as _random
+        if on:
+            if getattr(self, "_watch_badge", None):
+                return
+            badge = QLabel(self)
+            badge.setObjectName("WatchBadge")
+            badge.setText("● MEHMET İZLİYOR")
+            badge.setStyleSheet(
+                "background: rgba(4,14,10,225); color: #7dffb0;"
+                "border: 1px solid #35d97a; border-radius: 11px;"
+                "padding: 5px 14px; font-size: 11px; font-weight: 700;")
+            badge.adjustSize()
+            badge.move(self.width() - badge.width() - 26, 64)
+            badge.show()
+            badge.raise_()
+            self._watch_badge = badge
+            # nabız animasyonu
+            base_alpha = 225
+            def _pulse():
+                try:
+                    b = getattr(self, "_watch_badge", None)
+                    if b is None:
+                        return
+                    a = 0.55 + 0.45 * _random.random()
+                    b.setStyleSheet(
+                        "background: rgba(4,14,10," + str(int(base_alpha * a)) + ");"
+                        "color: #7dffb0; border: 1px solid #35d97a;"
+                        "border-radius: 11px; padding: 5px 14px;"
+                        "font-size: 11px; font-weight: 700;")
+                except Exception:
+                    pass
+            self._watch_pulse = QTimer(self)
+            self._watch_pulse.timeout.connect(_pulse)
+            self._watch_pulse.start(1200)
+            self._log.append_log("SYS: İzleme modu AÇIK — ekranı ve sistem sesini dinliyorum.")
+        else:
+            b = getattr(self, "_watch_badge", None)
+            if b is not None:
+                b.close()
+                b.deleteLater()
+                self._watch_badge = None
+            p = getattr(self, "_watch_pulse", None)
+            if p is not None:
+                p.stop()
+                self._watch_pulse = None
+            self._log.append_log("SYS: İzleme modu KAPALI.")
+
+    def _on_vpn_alert(self, url: str, warn: str) -> None:
+        """Panel: kritik sitede VPN kapalı — ekranda kırmızı uyarı bandı."""
+        try:
+            self._log.append_log("UYARI: " + warn)
+        except Exception:
+            print("UYARI:", warn)
+        try:
+            if getattr(self, "_vpn_guard_toast", None):
+                self._vpn_guard_toast.close()
+        except Exception:
+            pass
+        toast = None
+        try:
+            from PyQt6.QtWidgets import QLabel as _QLabel
+            toast = _QLabel(self)
+            toast.setObjectName("VpnGuardToast")
+            toast.setStyleSheet(
+                "background: rgba(20,10,10,235); color: #ffd7de;"
+                "border: 1px solid #ff4d6d; border-radius: 10px;"
+                "padding: 10px 16px; font-size: 12px; font-weight: 600;")
+            toast.setWordWrap(True)
+            toast.setText(warn)
+            try:
+                from browser import icons as _icons
+                pm = _icons.get_pixmap("shield", 32, "#ff4d6d")
+            except Exception:
+                pm = None
+            toast.adjustSize()
+            vw = self.width()
+            toast.move((vw - toast.width()) // 2, self.height() - 90)
+            toast.show()
+            toast.raise_()
+            from PyQt6.QtCore import QTimer as _QTimer
+            _QTimer.singleShot(6000, toast.deleteLater)
+        except Exception:
+            pass
+        self._vpn_guard_toast = toast
+
+    def _position_browser(self) -> None:
+        """Tarayıcı katmanını ORTA KOLONA yerleştir: header/sol/sağ panel ve
+        footer görünür kalır — sadece MEHMET alanı tarayıcıya devrolur."""
+        if self._browser_page is None:
+            return
+        cw = self.centralWidget()
+        left  = self._left_panel.width()  if self._left_panel.isVisible()  else 0
+        right = self._right_panel.width() if self._right_panel.isVisible() else 0
+        top    = self._header.height()
+        bottom = self._footer.height() if self._footer.isVisible() else 0
+        geo = cw.rect().adjusted(left, top, -right, -bottom)
+        if geo.width() > 0 and geo.height() > 0:
+            self._browser_page.setGeometry(geo)
+
+    def open_browser(self, url: str = "") -> None:
+        """NAVİGATÖR'ü tam pencere modunda aç (ana thread). url verilirse
+        aktif sekmede gezinir; '?' ile başlarsa Google araması yapar."""
+        if self.is_serious_mode:
+            self._log.append_log("SİSTEM: NAVİGATÖR ciddi modda kullanılamaz.")
+            return
+        self._ensure_browser()
+        if self._browser is None:
+            self._log.append_log("SİSTEM: NAVİGATÖR yüklenemedi — PyQt6-WebEngine eksik olabilir.")
+            return
+        if url:
+            if url.startswith("?"):
+                self._browser.search(url[1:].strip())
+            elif url != "about:blank":
+                self._browser.navigate(url)
+        self._position_browser()
+        if not self._browser_open:
+            self._browser_open = True
+            self._play_curtain(opening=True)
+            self._log.append_log("SİSTEM: NAVİGATÖR MEHMET alanında açık. [F6] geri döner.")
+        else:
+            self._browser_page.show()
+            self._browser_page.raise_()
+        if hasattr(self, "_nav_btn"):
+            self._nav_btn.setChecked(True)
+
+    def close_browser(self) -> None:
+        """NAVİGATÖR'ü sinematik perdeyle kapatır; sekmeler arka planda
+        saklanır. Ana arayüz perde açılınca görünür."""
+        if not self._browser_open:
+            return
+        self._browser_open = False
+        self._play_curtain(opening=False)
+        if hasattr(self, "_nav_btn"):
+            self._nav_btn.setChecked(False)
+        self._log.append_log("SİSTEM: Mehmet'e dönüldü. NAVİGATÖR beklemede.")
+
+    def toggle_browser(self) -> None:
+        if self._browser_open:
+            self.close_browser()
+        else:
+            self.open_browser()
+
+    # ── sinematik geçiş perdesi (JARVIS tarzı) ─────────────────────────────
+    def _browser_rect(self):
+        """Perdenin kaplayacağı alan: tarayıcı katmanıyla aynı orta kolon."""
+        cw = self.centralWidget()
+        left  = self._left_panel.width()  if self._left_panel.isVisible()  else 0
+        right = self._right_panel.width() if self._right_panel.isVisible() else 0
+        top    = self._header.height()
+        bottom = self._footer.height() if self._footer.isVisible() else 0
+        return cw.rect().adjusted(left, top, -right, -bottom)
+
+    def _play_curtain(self, *, opening: bool, label: str = "NAVİGATÖR") -> None:
+        """Sinematik geçiş perdesi (AI↔tarayıcı, ciddi mod, açılış).
+        Kapanışta tarayıcı sayfası perde tamamen kapana kadar görünür kalır.
+        (browser.transition.BrowserCurtain)
+        """
+        from browser.transition import BrowserCurtain
+        if self._browser_curtain is None:
+            self._browser_curtain = BrowserCurtain(self.centralWidget())
+        rect = self._browser_rect()
+        page = self._browser_page
+        curtain = self._browser_curtain
+        curtain.set_label(label)
+        if opening:
+            # tarayıcı perdenin ALTINDA hazır: perde kapanınca zaten görünür
+            if page is not None:
+                page.show()
+                page.raise_()
+            curtain.raise_()
+            curtain.open_curtain(rect)
+        else:
+            # sayfa perde tam kapana kadar görünür (perde onu "yer"),
+            # dalga koyu perde üstünde koşar, açılış HUD'ı gösterir
+            if page is not None:
+                def _hide_page():
+                    if not self._browser_open:
+                        page.hide()
+                QTimer.singleShot(360, _hide_page)
+            curtain.raise_()
+            curtain.close_curtain(rect)
+
+    def _on_browser_command(self, cmd: str) -> None:
+        """Slot — thread-safe tarayıcı komutları (Mehmet sesli API'si dahil)."""
+        if cmd == "toggle":
+            self.toggle_browser()
+        elif cmd.startswith("open:"):
+            self.open_browser(cmd[5:])
+        elif cmd == "close":
+            self.close_browser()
+        elif self._browser is None:
+            return
+        elif cmd.startswith("search:"):
+            self._browser.search(cmd[7:])
+            if not self._browser_open:
+                self.open_browser()
+        elif cmd.startswith("newtab:"):
+            self._browser.new_tab(cmd[7:] or "")
+            if not self._browser_open:
+                self.open_browser()
+        elif cmd == "closetab":
+            self._browser.close_current_tab()
+        elif cmd.startswith("switchtab:"):
+            try:
+                self._browser.switch_tab(int(cmd[10:]))
+            except ValueError:
+                pass
+        elif cmd == "closeall":
+            closed = self._browser.close_all_tabs()
+            self._log.append_log(f"SİSTEM: {closed} sekme kapatıldı.")
+        elif cmd.startswith("pageurl:"):
+            token = cmd[8:]
+            url = ""
+            try:
+                if self._browser is not None:
+                    url = self._browser.current_url() or ""
+            except Exception:
+                url = ""
+            self._page_text_sig.emit(token + "\x1f" + json.dumps(
+                {"url": url}, ensure_ascii=False))
+        elif cmd.startswith("listtabs:"):
+            token = cmd[9:]
+            lst = self._browser.list_tabs()
+            self._page_text_sig.emit(
+                token + "\x1f" + json.dumps({"list": lst},
+                                             ensure_ascii=False))
+        elif cmd == "vpntoggle":
+            self._browser._toggle_vpn_quick()
+            st = self._browser.vpn.status_text()
+            self._log.append_log("SİSTEM: VPN — " + st)
+        elif cmd == "abtoggle":
+            new_state = not self._browser.adblock.enabled
+            self._browser._ab_btn.setChecked(new_state)
+        elif cmd.startswith("chain:"):
+            # Çok adımlı görev: zinciri ana thread'de pump'la çalıştır
+            token, _, payload = cmd[6:].partition("\x1f")
+            try:
+                spec = json.loads(payload)
+            except Exception:
+                spec = {}
+            _pump = (QApplication.instance().processEvents
+                     if QApplication.instance() else None)
+            res = self._browser.run_chain(spec, pump=_pump)
+            self._page_text_sig.emit(
+                token + "\x1f" + json.dumps(res, ensure_ascii=False))
+        elif cmd.startswith("shot:"):
+            token = cmd[5:]
+            res = self._browser.screenshot_active()
+            self._page_text_sig.emit(
+                token + "\x1f" + json.dumps(res, ensure_ascii=False))
+        elif cmd.startswith("cap:"):
+            # Görsel analiz: PNG baytları base64 ile geri akar (JSON uyumlu)
+            import base64 as _b64c
+            token = cmd[4:]
+            res = self._browser.capture_image()
+            if res.get("ok") and res.get("png"):
+                res["png"] = _b64c.b64encode(res["png"]).decode("ascii")
+            self._page_text_sig.emit(
+                token + "\x1f" + json.dumps(res, ensure_ascii=False))
+        elif cmd.startswith("vpnconn:"):
+            # Tek kelimeyle VPN'e bağlan (bölge takma adı veya 'en hızlı')
+            token, _, word = cmd[8:].partition("\x1f")
+            def _vpn_word_work(token=token, word=word):
+                vpn = self._browser.vpn
+                ok, msg = vpn.connect_word(word)
+                self._page_text_sig.emit(token + "\x1f" + json.dumps(
+                    {"ok": ok, "message": msg,
+                     "status": vpn.status_text()}, ensure_ascii=False))
+            threading.Thread(target=_vpn_word_work, daemon=True).start()
+        elif cmd.startswith("translate:"):
+            token, _, target = cmd[10:].partition("\x1f")
+            _pump = (QApplication.instance().processEvents
+                     if QApplication.instance() else None)
+            res = self._browser.translate_active(target or "tr", pump=_pump)
+            self._page_text_sig.emit(
+                token + "\x1f" + json.dumps(res, ensure_ascii=False))
+        elif cmd.startswith("vpnspeed:"):
+            token, _, auto = cmd[9:].partition("\x1f")
+            def _speed_work(token=token, auto=auto):
+                import json as _json
+                vpn = self._browser.vpn
+                if auto == "1":
+                    p, results = vpn.auto_select_fastest(5.0)
+                    res = {"ok": p is not None, "results": [
+                        {"name": n, "region": r, "ms": ms}
+                        for n, r, ms in results],
+                        "selected": (p or {}).get("name", ""),
+                        "upstream": vpn.upstream_label()}
+                else:
+                    results = vpn.speed_test(5.0)
+                    res = {"ok": any(ms is not None for _, _, ms in results),
+                           "results": [{"name": n, "region": r, "ms": ms}
+                                       for n, r, ms in results]}
+                self._page_text_sig.emit(
+                    token + "\x1f" + _json.dumps(res, ensure_ascii=False))
+            import threading as _th
+            _th.Thread(target=_speed_work, daemon=True).start()
+        elif cmd.startswith("click:"):
+            token, _, payload = cmd[6:].partition("\x1f")
+            self._page_action_and_reply(token, "click", payload)
+        elif cmd.startswith("type:"):
+            token, _, payload = cmd[5:].partition("\x1f")
+            self._page_action_and_reply(token, "type", payload)
+        elif cmd.startswith("fillform:"):
+            token, _, payload = cmd[9:].partition("\x1f")
+            self._page_action_and_reply(token, "fillform", payload)
+        elif cmd.startswith("scroll:"):
+            try:
+                _, d, a = cmd.split(":", 2)
+                t = self._browser._current_tab()
+                if t:
+                    t.js_scroll(d, int(a))
+            except Exception:
+                pass
+        elif cmd.startswith("presskey:"):
+            try:
+                kv = json.loads(cmd[9:])
+                t = self._browser._current_tab()
+                if t:
+                    t.js_press_key(kv.get("key", "Enter"))
+            except Exception:
+                pass
+        elif cmd.startswith("dark:"):
+            self._browser.set_dark_mode(cmd[5:] in ("1", "on", "true"))
+        elif cmd.startswith("zoom:"):
+            try:
+                self._browser.set_zoom_pct(int(cmd[5:]))
+            except ValueError:
+                pass
+        elif cmd.startswith("font:"):
+            try:
+                self._browser.set_font_delta(int(cmd[5:]))
+            except ValueError:
+                pass
+        elif cmd.startswith("readpage:"):
+            self._read_page_and_reply(cmd[9:])
+
+    def closeEvent(self, ev) -> None:
+        b = self._browser
+        if b is not None:
+            try:
+                b.shutdown()
+            except Exception:
+                pass
+        super().closeEvent(ev)
+
+    # ── sayfa metni okuma (Mehmet'in okuma yeteneği) ──────────────────────
+    def _read_page_and_reply(self, token: str) -> None:
+        """Aktif sekmenin metnini okur; sonucu `_page_text_sig` üzerinden
+        (token ile eşleşen) bekleyen thread'e iletir."""
+        if self._browser is None:
+            self._ensure_browser()
+        if self._browser is None:
+            self._page_text_sig.emit(f"{token}\x1f" + json.dumps(
+                {"ok": False, "error": "tarayıcı kullanılamıyor"}))
+            return
+        try:
+            self._browser.read_page(
+                lambda meta, _tk=token: self._page_text_sig.emit(
+                    f"{_tk}\x1f" + json.dumps(meta, ensure_ascii=False)))
+        except Exception as e:
+            self._page_text_sig.emit(f"{token}\x1f" + json.dumps(
+                {"ok": False, "error": str(e)}))
+
+    def _on_page_text(self, payload: str) -> None:
+        """Ana thread: okuma/aksi sonucunu bekleyen Event'i uyandır."""
+        rec = self._page_waiters.pop(payload.split("\x1f")[0], None)
+        if rec is not None:
+            rec["payload"] = payload.split("\x1f", 1)[1]
+            rec["event"].set()
+
+    def _page_action_and_reply(self, token: str, action: str,
+                               payload: str) -> None:
+        """Sayfa içi aksiyon (click/type/fill) çalıştırır; sonucu JSON
+        olarak bekleyen thread'e iletir."""
+        def _reply(res: dict):
+            self._page_text_sig.emit(
+                token + "\x1f" + json.dumps(res, ensure_ascii=False))
+
+        try:
+            args = json.loads(payload) if payload else {}
+        except Exception:
+            _reply({"ok": False, "error": "parametreler çözümlenemedi"})
+            return
+        b = self._browser
+        if b is None:
+            _reply({"ok": False, "error": "tarayıcı yok"})
+            return
+        t = b._current_tab()
+        if t is None:
+            _reply({"ok": False, "error": "açık sekme yok"})
+            return
+        if action == "click":
+            if args.get("text"):
+                t.js_find_and_click(args["text"], _reply)
+            else:
+                t.js_click(args.get("selector", ""), _reply)
+        elif action == "type":
+            t.js_type(args.get("selector", ""), args.get("text", ""),
+                      bool(args.get("clear", True)), _reply)
+        elif action == "fillform":
+            t.js_fill_form(args if isinstance(args, dict) else {}, _reply)
+        else:
+            _reply({"ok": False, "error": "bilinmeyen aksiyon"})
 
     def _build_header(self) -> QWidget:
         w = QWidget()
-        w.setFixedHeight(54)
-        w.setStyleSheet(f"background: {C.DARK}; border-bottom: 1px solid {C.BORDER_B};")
+        w.setFixedHeight(72)
+        w.setObjectName("AppHeader")
+        w.setStyleSheet(f"""
+            QWidget#AppHeader {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 {C.DARK}, stop:0.5 {C.PANEL}, stop:1 {C.DARK});
+                border-bottom: 1px solid {C.BORDER_B};
+            }}
+        """)
         lay = QHBoxLayout(w)
         lay.setContentsMargins(16, 0, 16, 0)
 
         def _badge(txt, color=C.TEXT_MED):
             l = QLabel(txt)
-            l.setFont(QFont("Courier New", 8))
+            l.setFont(_font(FONT_MONO, 9, QFont.Weight.DemiBold))
             l.setStyleSheet(f"color: {color}; background: transparent;")
             return l
 
-        lay.addWidget(_badge("Sürüm 3.22.0", C.PRI_DIM))
+        lay.addWidget(_badge(f"v{APP_VERSION}", C.PRI_DIM))
         lay.addSpacing(8)
         self._drawer_btn = QPushButton("⚙")
-        self._drawer_btn.setFixedSize(26, 26)
-        self._drawer_btn.setFont(QFont("Courier New", 11))
+        self._drawer_btn.setFixedSize(36, 36)
+        self._drawer_btn.setFont(_font(FONT_DISPLAY, 14, QFont.Weight.DemiBold))
         self._drawer_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._drawer_btn.setToolTip("Settings & Controls")
+        self._drawer_btn.setToolTip("Ayarlar ve hızlı kontroller")
         self._drawer_btn.setStyleSheet(f"""
             QPushButton {{
                 background: transparent; color: {C.TEXT_DIM};
-                border: 1px solid {C.BORDER}; border-radius: 4px;
+                border: 1px solid {C.BORDER}; border-radius: 8px;
             }}
             QPushButton:hover {{ color: {C.PRI}; border-color: {C.PRI_DIM}; }}
             QPushButton:checked {{ color: {C.PRI}; border-color: {C.PRI}; background: {C.PRI_GHO}; }}
@@ -3187,32 +3429,31 @@ class MainWindow(QMainWindow):
         lay.addWidget(self._drawer_btn)
         lay.addStretch()
 
-        mid = QVBoxLayout(); mid.setSpacing(1)
+        mid = QVBoxLayout(); mid.setSpacing(2)
         _disp = self._assistant_name.upper()
         self._title_lbl = QLabel(_disp)
         self._title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._title_lbl.setFont(QFont("Courier New", 17, QFont.Weight.Bold))
-        self._title_lbl.setStyleSheet(f"color: {C.PRI}; background: transparent;")
+        self._title_lbl.setFont(_font(FONT_DISPLAY, 24, QFont.Weight.DemiBold))
+        self._title_lbl.setStyleSheet(
+            f"color: {C.PRI}; background: transparent; letter-spacing: 6px;")
         mid.addWidget(self._title_lbl)
-        _sub_text = ("KİŞİSEL AI"
-                     if _disp in ("Mehmet", "MEHMET")
-                     else "Personal AI Assistant")
-        self._sub_lbl = QLabel(_sub_text)
+        self._sub_lbl = QLabel("BARANT // KİŞİSEL YAPAY ZEKÂ")
         self._sub_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._sub_lbl.setFont(QFont("Courier New", 7))
-        self._sub_lbl.setStyleSheet(f"color: {C.PRI_DIM}; background: transparent;")
+        self._sub_lbl.setFont(_font(FONT_MONO, 9, QFont.Weight.DemiBold))
+        self._sub_lbl.setStyleSheet(
+            f"color: {C.PRI_DIM}; background: transparent; letter-spacing: 2px;")
         mid.addWidget(self._sub_lbl)
         lay.addLayout(mid)
         lay.addStretch()
 
         right_col = QVBoxLayout(); right_col.setSpacing(2)
         self._clock_lbl = QLabel("00:00:00")
-        self._clock_lbl.setFont(QFont("Courier New", 14, QFont.Weight.Bold))
+        self._clock_lbl.setFont(_font(FONT_DISPLAY, 20, QFont.Weight.DemiBold))
         self._clock_lbl.setStyleSheet(f"color: {C.PRI}; background: transparent;")
         self._clock_lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
         right_col.addWidget(self._clock_lbl)
         self._date_lbl = QLabel("")
-        self._date_lbl.setFont(QFont("Courier New", 7))
+        self._date_lbl.setFont(_font(FONT_MONO, 9))
         self._date_lbl.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
         self._date_lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
         right_col.addWidget(self._date_lbl)
@@ -3221,21 +3462,37 @@ class MainWindow(QMainWindow):
 
     def _tick_clock(self):
         self._clock_lbl.setText(time.strftime("%H:%M:%S"))
-        self._date_lbl.setText(time.strftime("%a %d %b %Y"))
+        day_names = ("Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar")
+        month_names = ("Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran",
+                       "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık")
+        now = time.localtime()
+        self._date_lbl.setText(
+            f"{day_names[now.tm_wday]} · {now.tm_mday} {month_names[now.tm_mon - 1]} {now.tm_year}"
+        )
 
     def _build_left_panel(self) -> QWidget:
         w = QWidget()
         w.setFixedWidth(_LEFT_W)
-        w.setStyleSheet(f"background: {C.DARK}; border-right: 1px solid {C.BORDER};")
+        w.setObjectName("SystemPanel")
+        w.setStyleSheet(f"""
+            QWidget#SystemPanel {{
+                background: {C.PANEL};
+                border-right: 1px solid {C.BORDER};
+            }}
+        """)
         lay = QVBoxLayout(w)
-        lay.setContentsMargins(8, 10, 8, 10)
-        lay.setSpacing(6)
+        lay.setContentsMargins(14, 16, 14, 14)
+        lay.setSpacing(9)
 
-        hdr = QLabel("◈ SİSTEM MONİTÖRÜ")
-        hdr.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
-        hdr.setStyleSheet(f"color: {C.PRI}; background: transparent; "
-                          f"border-bottom: 1px solid {C.BORDER}; padding-bottom: 4px;")
+        hdr = QLabel("SİSTEM DURUMU")
+        hdr.setFont(_font(FONT_DISPLAY, 14, QFont.Weight.DemiBold))
+        hdr.setStyleSheet(f"color: {C.WHITE}; background: transparent; "
+                          f"border-bottom: 1px solid {C.BORDER}; padding-bottom: 8px;")
         lay.addWidget(hdr)
+        sub = QLabel("CANLI TELEMETRİ")
+        sub.setFont(_font(FONT_MONO, 8, QFont.Weight.DemiBold))
+        sub.setStyleSheet(f"color: {C.PRI_DIM}; background: transparent; letter-spacing: 1px;")
+        lay.addWidget(sub)
         lay.addSpacing(2)
 
         self._bar_cpu = MetricBar("CPU", C.PRI)
@@ -3252,44 +3509,60 @@ class MainWindow(QMainWindow):
 
         info_panel = QWidget()
         info_panel.setStyleSheet(
-            f"background: {C.PANEL2}; border: 1px solid {C.BORDER}; border-radius: 4px;"
+            f"background: {C.PANEL2}; border: 1px solid {C.BORDER}; border-radius: 10px;"
         )
         ip_lay = QVBoxLayout(info_panel)
         ip_lay.setContentsMargins(6, 5, 6, 5)
         ip_lay.setSpacing(3)
 
-        self._uptime_lbl = QLabel("UP  --:--")
-        self._uptime_lbl.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        self._uptime_lbl = QLabel("ÇALIŞMA  --:--")
+        self._uptime_lbl.setFont(_font(FONT_MONO, 10, QFont.Weight.DemiBold))
         self._uptime_lbl.setStyleSheet(f"color: {C.GREEN}; background: transparent; border: none;")
         ip_lay.addWidget(self._uptime_lbl)
 
-        self._proc_lbl = QLabel("PROC  --")
-        self._proc_lbl.setFont(QFont("Courier New", 8))
+        self._proc_lbl = QLabel("İŞLEM  --")
+        self._proc_lbl.setFont(_font(FONT_MONO, 10))
         self._proc_lbl.setStyleSheet(f"color: {C.TEXT_MED}; background: transparent; border: none;")
         ip_lay.addWidget(self._proc_lbl)
 
         os_name = {"Windows": "WIN", "Darwin": "macOS", "Linux": "LINUX"}.get(_OS, _OS.upper())
         os_lbl = QLabel(f"OS  {os_name}")
-        os_lbl.setFont(QFont("Courier New", 8))
+        os_lbl.setFont(_font(FONT_MONO, 10))
         os_lbl.setStyleSheet(f"color: {C.ACC2}; background: transparent; border: none;")
         ip_lay.addWidget(os_lbl)
 
         lay.addWidget(info_panel)
         lay.addSpacing(4)
 
+        # NAVİGATÖR — dahili tarayıcı geçidi
+        self._nav_btn = QPushButton("🌐  NAVİGATÖR")
+        self._nav_btn.setFixedHeight(40)
+        self._nav_btn.setFont(_font(FONT_UI, 10, QFont.Weight.DemiBold))
+        self._nav_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._nav_btn.setToolTip("Dahili tarayıcıyı aç/kapat (sekme destekli)")
+        self._nav_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {C.PRI_GHO}; color: {C.PRI};
+                border: 1px solid {C.PRI_DIM}; border-radius: 8px;
+            }}
+            QPushButton:hover {{ border-color: {C.PRI}; color: {C.WHITE}; }}
+        """)
+        self._nav_btn.clicked.connect(self.toggle_browser)
+        lay.addWidget(self._nav_btn)
+
         lay.addStretch()
 
         for txt, col in [
-            ("AI CORE\nACTIVE",  C.GREEN),
-            ("SEC\nCLEARED",     C.PRI),
-            ("PROTOCOL\nXLIX",   C.TEXT_DIM),
+            ("YAPAY ZEKÂ\nÇEVRİMİÇİ",  C.GREEN),
+            ("GÜVENLİK\nKORUNUYOR",     C.PRI),
+            ("BARANT\nPROTOKOLÜ",        C.TEXT_DIM),
         ]:
             lbl = QLabel(txt)
-            lbl.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
+            lbl.setFont(_font(FONT_UI, 10, QFont.Weight.DemiBold))
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lbl.setStyleSheet(
                 f"color: {col}; background: {C.PANEL2};"
-                f"border: 1px solid {C.BORDER_A}; border-radius: 3px; padding: 4px;"
+                f"border: 1px solid {C.BORDER_A}; border-radius: 8px; padding: 8px;"
             )
             lay.addWidget(lbl)
 
@@ -3297,15 +3570,21 @@ class MainWindow(QMainWindow):
     def _build_right_panel(self) -> QWidget:
         w = QWidget()
         w.setFixedWidth(_RIGHT_W)
-        w.setStyleSheet(f"background: {C.DARK}; border-left: 1px solid {C.BORDER};")
+        w.setObjectName("ControlPanel")
+        w.setStyleSheet(f"""
+            QWidget#ControlPanel {{
+                background: {C.PANEL};
+                border-left: 1px solid {C.BORDER};
+            }}
+        """)
         lay = QVBoxLayout(w)
-        lay.setContentsMargins(8, 8, 8, 8)
-        lay.setSpacing(6)
+        lay.setContentsMargins(14, 16, 14, 14)
+        lay.setSpacing(9)
 
         def _sec(txt):
-            l = QLabel(f"▸ {txt}")
-            l.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
-            l.setStyleSheet(f"color: {C.TEXT_MED}; background: transparent;")
+            l = QLabel(txt)
+            l.setFont(_font(FONT_DISPLAY, 10, QFont.Weight.DemiBold))
+            l.setStyleSheet(f"color: {C.WHITE}; background: transparent; padding-top: 2px;")
             return l
 
         lay.addWidget(_sec("HAREKET GÜNLÜĞÜ"))
@@ -3316,13 +3595,13 @@ class MainWindow(QMainWindow):
         sep.setStyleSheet(f"color: {C.BORDER}; margin: 2px 0;")
         lay.addWidget(sep)
 
-        lay.addWidget(_sec("FILE UPLOAD"))
+        lay.addWidget(_sec("DOSYA ALANI"))
         self._drop_zone = FileDropZone()
         self._drop_zone.file_selected.connect(self._on_file_selected)
         lay.addWidget(self._drop_zone)
 
         self._file_hint = QLabel("Dosya yüklenmedi — yüklemek için tıkla yada sürükle")
-        self._file_hint.setFont(QFont("Courier New", 7))
+        self._file_hint.setFont(_font(FONT_UI, 8))
         self._file_hint.setStyleSheet(f"color: {C.TEXT_MED}; background: transparent;")
         self._file_hint.setWordWrap(True)
         lay.addWidget(self._file_hint)
@@ -3331,17 +3610,17 @@ class MainWindow(QMainWindow):
         sep2.setStyleSheet(f"color: {C.BORDER}; margin: 2px 0;")
         lay.addWidget(sep2)
 
-        lay.addWidget(_sec("KOMUT GİRİN"))
+        lay.addWidget(_sec("KOMUT MERKEZİ"))
         lay.addLayout(self._build_input_row())
 
         self._interrupt_btn = QPushButton("✋  SUSTUR  [ESC]")
-        self._interrupt_btn.setFixedHeight(34)
-        self._interrupt_btn.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        self._interrupt_btn.setFixedHeight(38)
+        self._interrupt_btn.setFont(_font(FONT_UI, 9, QFont.Weight.DemiBold))
         self._interrupt_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._interrupt_btn.setStyleSheet(f"""
             QPushButton {{
                 background: #140008; color: {C.MUTED_C};
-                border: 1px solid {C.MUTED_C}; border-radius: 3px;
+                border: 1px solid {C.MUTED_C}; border-radius: 8px;
             }}
             QPushButton:hover {{
                 background: #200010; border: 1px solid #ff6688;
@@ -3354,8 +3633,8 @@ class MainWindow(QMainWindow):
         lay.addWidget(self._interrupt_btn)
 
         self._mute_btn = QPushButton("🎙  MİKROFON AKTİF")
-        self._mute_btn.setFixedHeight(30)
-        self._mute_btn.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        self._mute_btn.setFixedHeight(36)
+        self._mute_btn.setFont(_font(FONT_UI, 9, QFont.Weight.DemiBold))
         self._mute_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._mute_btn.clicked.connect(self._toggle_mute)
         self._style_mute_btn()
@@ -3386,10 +3665,9 @@ class MainWindow(QMainWindow):
         w.setObjectName("QuickDrawer")
         w.setStyleSheet(f"""
             QWidget#QuickDrawer {{
-                background: {C.DARK};
+                background: {C.PANEL};
                 border: 1px solid {C.BORDER_B};
-                border-top: none;
-                border-radius: 0 0 6px 6px;
+                border-radius: 10px;
             }}
         """)
         w.hide()
@@ -3398,65 +3676,65 @@ class MainWindow(QMainWindow):
         lay.setContentsMargins(10, 8, 10, 10)
         lay.setSpacing(5)
 
-        hdr = QLabel("◈ CONTROLS")
-        hdr.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
+        hdr = QLabel("HIZLI KONTROLLER")
+        hdr.setFont(_font(FONT_DISPLAY, 10, QFont.Weight.DemiBold))
         hdr.setStyleSheet(f"color: {C.PRI_DIM}; background: transparent; "
                           f"border-bottom: 1px solid {C.BORDER}; padding-bottom: 4px;")
         lay.addWidget(hdr)
 
-        remote_btn = QPushButton("◉  REMOTE CONTROL")
+        remote_btn = QPushButton("◉  UZAKTAN KONTROL")
         remote_btn.setFixedHeight(30)
-        remote_btn.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        remote_btn.setFont(_font(FONT_UI, 9, QFont.Weight.DemiBold))
         remote_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         remote_btn.setStyleSheet(_BTN_STYLE_PRI)
         remote_btn.clicked.connect(self._open_remote)
         lay.addWidget(remote_btn)
 
-        fs_btn = QPushButton("⛶  FULLSCREEN  [F11]")
+        fs_btn = QPushButton("⛶  TAM EKRAN  [F11]")
         fs_btn.setFixedHeight(26)
-        fs_btn.setFont(QFont("Courier New", 7))
+        fs_btn.setFont(_font(FONT_UI, 8))
         fs_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         fs_btn.setStyleSheet(_BTN_STYLE_DIM)
         fs_btn.clicked.connect(self._toggle_fullscreen)
         lay.addWidget(fs_btn)
 
-        sc_btn = QPushButton("⊞  CREATE DESKTOP SHORTCUT")
+        sc_btn = QPushButton("⊞  MASAÜSTÜ KISAYOLU OLUŞTUR")
         sc_btn.setFixedHeight(26)
-        sc_btn.setFont(QFont("Courier New", 7))
+        sc_btn.setFont(_font(FONT_UI, 8))
         sc_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         sc_btn.setStyleSheet(_BTN_STYLE_DIM)
         sc_btn.clicked.connect(self._create_desktop_shortcut)
         lay.addWidget(sc_btn)
 
-        self._autostart_btn = QPushButton("◉  AUTO-START: OFF")
+        self._autostart_btn = QPushButton("◉  OTOMATİK BAŞLAT: KAPALI")
         self._autostart_btn.setFixedHeight(26)
-        self._autostart_btn.setFont(QFont("Courier New", 7))
+        self._autostart_btn.setFont(_font(FONT_UI, 8))
         self._autostart_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._autostart_btn.clicked.connect(self._toggle_autostart)
         lay.addWidget(self._autostart_btn)
 
-        cust_btn = QPushButton("⚙  CUSTOMISE ASSISTANT")
+        cust_btn = QPushButton("⚙  MEHMET'İ KİŞİSELLEŞTİR")
         cust_btn.setFixedHeight(26)
-        cust_btn.setFont(QFont("Courier New", 7))
+        cust_btn.setFont(_font(FONT_UI, 8))
         cust_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         cust_btn.setStyleSheet(_BTN_STYLE_DIM)
         cust_btn.clicked.connect(self._open_customize)
         lay.addWidget(cust_btn)
 
+        nav_btn = QPushButton("🌐  NAVİGATÖR'Ü AÇ / KAPAT")
+        nav_btn.setFixedHeight(26)
+        nav_btn.setFont(_font(FONT_UI, 8, QFont.Weight.DemiBold))
+        nav_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        nav_btn.setStyleSheet(_BTN_STYLE_PRI)
+        nav_btn.clicked.connect(self.toggle_browser)
+        lay.addWidget(nav_btn)
+
         self._brief_btn = QPushButton()
         self._brief_btn.setFixedHeight(26)
-        self._brief_btn.setFont(QFont("Courier New", 7))
+        self._brief_btn.setFont(_font(FONT_UI, 8))
         self._brief_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._brief_btn.clicked.connect(self._toggle_brief)
         lay.addWidget(self._brief_btn)
-
-        mcp_btn = QPushButton("🔌  MCP EKLENTİLERİ")
-        mcp_btn.setFixedHeight(26)
-        mcp_btn.setFont(QFont("Courier New", 7))
-        mcp_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        mcp_btn.setStyleSheet(_BTN_STYLE_DIM)
-        mcp_btn.clicked.connect(self._open_mcp_manager)
-        lay.addWidget(mcp_btn)
 
         w.adjustSize()
         return w
@@ -3475,18 +3753,18 @@ class MainWindow(QMainWindow):
         _W = 220
         self._quick_drawer.setFixedWidth(_W)
         self._quick_drawer.adjustSize()
-        self._quick_drawer.setGeometry(12, 54, _W, self._quick_drawer.sizeHint().height())
+        self._quick_drawer.setGeometry(16, 76, _W, self._quick_drawer.sizeHint().height())
 
     def _build_input_row(self) -> QHBoxLayout:
         row = QHBoxLayout(); row.setSpacing(5)
         self._input = QLineEdit()
-        self._input.setPlaceholderText("Type a command or question…")
-        self._input.setFont(QFont("Courier New", 9))
-        self._input.setFixedHeight(30)
+        self._input.setPlaceholderText("Bir komut veya soru yazın…")
+        self._input.setFont(_font(FONT_UI, 10))
+        self._input.setFixedHeight(36)
         self._input.setStyleSheet(f"""
             QLineEdit {{
                 background: #000d14; color: {C.WHITE};
-                border: 1px solid {C.BORDER}; border-radius: 3px; padding: 3px 7px;
+                border: 1px solid {C.BORDER}; border-radius: 8px; padding: 4px 10px;
             }}
             QLineEdit:focus {{ border: 1px solid {C.PRI}; }}
         """)
@@ -3494,13 +3772,13 @@ class MainWindow(QMainWindow):
         row.addWidget(self._input)
 
         send = QPushButton("▸")
-        send.setFixedSize(30, 30)
-        send.setFont(QFont("Courier New", 11, QFont.Weight.Bold))
+        send.setFixedSize(36, 36)
+        send.setFont(_font(FONT_DISPLAY, 13, QFont.Weight.DemiBold))
         send.setCursor(Qt.CursorShape.PointingHandCursor)
         send.setStyleSheet(f"""
             QPushButton {{
                 background: {C.PANEL}; color: {C.PRI};
-                border: 1px solid {C.PRI_DIM}; border-radius: 3px;
+                border: 1px solid {C.PRI_DIM}; border-radius: 9px;
             }}
             QPushButton:hover {{ background: {C.PRI_GHO}; border: 1px solid {C.PRI}; }}
         """)
@@ -3535,8 +3813,8 @@ class MainWindow(QMainWindow):
         dot.setStyleSheet(f"color: {C.PRI}; background: transparent;")
         hdr.addWidget(dot)
 
-        self._content_title_lbl = QLabel("BRIEFING")
-        self._content_title_lbl.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        self._content_title_lbl = QLabel("BİLGİ PANELİ")
+        self._content_title_lbl.setFont(_font(FONT_DISPLAY, 11, QFont.Weight.DemiBold))
         self._content_title_lbl.setStyleSheet(
             f"color: {C.PRI}; background: transparent; letter-spacing: 1px;"
         )
@@ -3544,18 +3822,18 @@ class MainWindow(QMainWindow):
         hdr.addStretch()
 
         self._content_ts_lbl = QLabel("")
-        self._content_ts_lbl.setFont(QFont("Courier New", 7))
+        self._content_ts_lbl.setFont(_font(FONT_MONO, 8))
         self._content_ts_lbl.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
         hdr.addWidget(self._content_ts_lbl)
 
-        dismiss = QPushButton("DISMISS  ✕")
-        dismiss.setFont(QFont("Courier New", 7))
+        dismiss = QPushButton("KAPAT  ✕")
+        dismiss.setFont(_font(FONT_UI, 8))
         dismiss.setFixedHeight(18)
         dismiss.setCursor(Qt.CursorShape.PointingHandCursor)
         dismiss.setStyleSheet(f"""
             QPushButton {{
                 background: transparent; color: {C.TEXT_DIM};
-                border: 1px solid {C.BORDER}; border-radius: 2px; padding: 0 5px;
+                border: 1px solid {C.BORDER}; border-radius: 6px; padding: 0 7px;
             }}
             QPushButton:hover {{ color: {C.TEXT}; border-color: {C.BORDER_B}; }}
         """)
@@ -3570,7 +3848,7 @@ class MainWindow(QMainWindow):
         # ── text display ──────────────────────────────────────────────────────
         self._content_display = QTextEdit()
         self._content_display.setReadOnly(True)
-        self._content_display.setFont(QFont("Courier New", 8))
+        self._content_display.setFont(_font(FONT_UI, 10))
         self._content_display.setMinimumHeight(60)
         self._content_display.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
@@ -3580,8 +3858,8 @@ class MainWindow(QMainWindow):
                 background: {C.DARK};
                 color: {C.TEXT};
                 border: 1px solid {C.BORDER};
-                border-radius: 3px;
-                padding: 6px 8px;
+                border-radius: 9px;
+                padding: 9px 11px;
                 selection-background-color: {C.PRI_GHO};
             }}
             QScrollBar:vertical {{
@@ -3615,18 +3893,18 @@ class MainWindow(QMainWindow):
 
     def _build_footer(self) -> QWidget:
         w = QWidget()
-        w.setFixedHeight(22)
-        w.setStyleSheet(f"background: {C.DARK}; border-top: 1px solid {C.BORDER};")
-        lay = QHBoxLayout(w); lay.setContentsMargins(14, 0, 14, 0)
+        w.setFixedHeight(32)
+        w.setStyleSheet(f"background: {C.PANEL}; border-top: 1px solid {C.BORDER};")
+        lay = QHBoxLayout(w); lay.setContentsMargins(16, 0, 16, 0)
 
         def _fl(txt, color=C.TEXT_MED):
-            l = QLabel(txt); l.setFont(QFont("Courier New", 7))
+            l = QLabel(txt); l.setFont(_font(FONT_MONO, 8))
             l.setStyleSheet(f"color: {color}; background: transparent;")
             return l
 
-        lay.addWidget(_fl("[F4] Sustur  ·  [F11] Tam Ekran"))
+        lay.addWidget(_fl("[F4] Mikrofon   •   [F11] Tam ekran   •   [ESC] Yanıtı kes"))
         lay.addStretch()
-        lay.addWidget(_fl("BaranT Tarafından", C.PRI_DIM))
+        lay.addWidget(_fl("BARANT  /  MEHMET YAPAY ZEKÂ", C.PRI_DIM))
         return w
 
     def _on_file_selected(self, path: str):
@@ -3635,8 +3913,8 @@ class MainWindow(QMainWindow):
         cat  = _file_category(p)
         icon, _ = _FILE_ICONS.get(cat, _FILE_ICONS["unknown"])
         size = _fmt_size(p.stat().st_size)
-        self._file_hint.setText(f"{icon}  {p.name}  ·  {size}  ·  Tell {self._assistant_name} what to do with it")
-        self._log.append_log(f"FILE: {p.name} ({size}) loaded")
+        self._file_hint.setText(f"{icon}  {p.name}  ·  {size}  ·  Mehmet'e ne yapılacağını söyleyin")
+        self._log.append_log(f"DOSYA: {p.name} ({size}) yüklendi")
         if self.on_text_command:
             msg = (
                 f"[FILE_UPLOADED] path={path} | name={p.name} | "
@@ -3764,7 +4042,7 @@ class MainWindow(QMainWindow):
         if not hasattr(self, '_autostart_btn'):
             return
         if enabled:
-            self._autostart_btn.setText("◉  AUTO-START: ON")
+            self._autostart_btn.setText("◉  OTOMATİK BAŞLAT: AÇIK")
             self._autostart_btn.setStyleSheet(f"""
                 QPushButton {{
                     background: #001a08; color: {C.GREEN};
@@ -3773,7 +4051,7 @@ class MainWindow(QMainWindow):
                 QPushButton:hover {{ background: #002010; }}
             """)
         else:
-            self._autostart_btn.setText("◉  AUTO-START: OFF")
+            self._autostart_btn.setText("◉  OTOMATİK BAŞLAT: KAPALI")
             self._autostart_btn.setStyleSheet(f"""
                 QPushButton {{
                     background: transparent; color: {C.TEXT_DIM};
@@ -3792,7 +4070,7 @@ class MainWindow(QMainWindow):
         if not hasattr(self, '_brief_btn'):
             return
         if enabled:
-            self._brief_btn.setText("☀  MORNING BRIEF: ON")
+            self._brief_btn.setText("☀  SABAH ÖZETİ: AÇIK")
             self._brief_btn.setStyleSheet(f"""
                 QPushButton {{
                     background: #001a08; color: {C.GREEN};
@@ -3802,7 +4080,7 @@ class MainWindow(QMainWindow):
                 QPushButton:hover {{ background: #002010; }}
             """)
         else:
-            self._brief_btn.setText("☀  MORNING BRIEF: OFF")
+            self._brief_btn.setText("☀  SABAH ÖZETİ: KAPALI")
             self._brief_btn.setStyleSheet(f"""
                 QPushButton {{
                     background: transparent; color: {C.TEXT_DIM};
@@ -3850,9 +4128,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"{display} — Sürüm 3.21.0")
         self._title_lbl.setText(display)
         if display in ("Mehmet", "MEHMET"):
-            self._sub_lbl.setText("Kişisel PC")
+            self._sub_lbl.setText("BARANT // KİŞİSEL YAPAY ZEKÂ")
         else:
-            self._sub_lbl.setText("Personal AI Assistant")
+            self._sub_lbl.setText("BARANT // KİŞİSEL YAPAY ZEKÂ")
         self._log._ai_name_lc = self._assistant_name.lower()
         self.hud._assistant_name = display
 
@@ -3876,33 +4154,6 @@ class MainWindow(QMainWindow):
                 self._log.append_log(f"SYS: UI colour applied — {ui_color}")
         except Exception as e:
             self._log.append_log(f"ERR: Config save failed — {e}")
-
-    # ── MCP Plugins ──────────────────────────────────────────────────────────────
-
-    def _open_mcp_manager(self):
-        if self._mcp_overlay:
-            self._mcp_overlay.hide()
-        cw = self.centralWidget()
-        ov = McpOverlay(parent=cw)
-        ow, oh = McpOverlay._OW, McpOverlay._OH
-        ow = min(ow, cw.width() - 16)
-        oh = min(oh, cw.height() - 16)
-        ov.setGeometry(
-            (cw.width()  - ow) // 2,
-            (cw.height() - oh) // 2,
-            ow, oh,
-        )
-        ov.closed.connect(lambda: setattr(self, '_mcp_overlay', None))
-        ov.plugins_updated.connect(self._on_mcp_plugins_updated)
-        ov.show()
-        self._mcp_overlay = ov
-
-    def _on_mcp_plugins_updated(self):
-        from core.mcp_manager import mcp_manager
-        active_count = len(mcp_manager.get_active_plugins())
-        self._log.append_log(f"SYS: MCP Eklentileri güncellendi ({active_count} aktif eklenti).")
-        if hasattr(self, 'on_mcp_updated') and callable(self.on_mcp_updated):
-            self.on_mcp_updated()
 
     # ── Clipboard intelligence ───────────────────────────────────────────────────
 
@@ -3950,19 +4201,19 @@ class MainWindow(QMainWindow):
 
     def _style_mute_btn(self):
         if self._muted:
-            self._mute_btn.setText("🔇  MİKROFON SESSİZDE")
+            self._mute_btn.setText("🔇  MİKROFON SESSİZ")
             self._mute_btn.setStyleSheet(f"""
                 QPushButton {{
                     background: #140006; color: {C.MUTED_C};
-                    border: 1px solid {C.MUTED_C}; border-radius: 3px;
+                    border: 1px solid {C.MUTED_C}; border-radius: 8px;
                 }}
             """)
         else:
-            self._mute_btn.setText("🎙  MİKROFON AKTİF")
+            self._mute_btn.setText("🎙  MİKROFON AÇIK")
             self._mute_btn.setStyleSheet(f"""
                 QPushButton {{
                     background: #00140a; color: {C.GREEN};
-                    border: 1px solid {C.GREEN}; border-radius: 3px;
+                    border: 1px solid {C.GREEN}; border-radius: 8px;
                 }}
                 QPushButton:hover {{ background: #001f10; }}
             """)
@@ -3978,6 +4229,8 @@ class MainWindow(QMainWindow):
     def _apply_state(self, state: str):
         self.hud.state    = state
         self.hud.speaking = (state == "SPEAKING")
+        if self.is_serious_mode:
+            self.serious_canvas.set_state(state, self.hud.speaking)
 
     def _check_config(self) -> bool:
         if not API_FILE.exists(): return False
@@ -4027,6 +4280,7 @@ class MehmetUI:
     def __init__(self, face_path: str, size=None):
         self._app = QApplication.instance() or QApplication(sys.argv)
         self._app.setStyle("Fusion")
+        self._app.setFont(_font(FONT_UI, 10))
         self._win = MainWindow(face_path)
         self._win.show()
         self.root = _RootShim(self._app)
@@ -4067,14 +4321,6 @@ class MehmetUI:
     @on_interrupt.setter
     def on_interrupt(self, cb):
         self._win.on_interrupt = cb
-
-    @property
-    def on_mcp_updated(self):
-        return self._win.on_mcp_updated
-
-    @on_mcp_updated.setter
-    def on_mcp_updated(self, cb):
-        self._win.on_mcp_updated = cb
 
     def notify_phone_connected(self) -> None:
         self._win.notify_phone_connected()
@@ -4117,6 +4363,395 @@ class MehmetUI:
     def stop_camera_stream(self) -> None:
         """Thread-safe: stop the live camera feed."""
         self._win.stop_camera_stream()
+
+    # ── NAVİGATÖR (dahili tarayıcı) ──────────────────────────────────────────
+    def browser_toggle(self) -> None:
+        """Thread-safe: NAVİGATÖR'ü aç/kapat."""
+        self._win._browser_sig.emit("toggle")
+
+    def browser_open(self, url: str = "") -> None:
+        """Thread-safe: NAVİGATÖR'ü aç. url '?' ile başlarsa Google araması."""
+        self._win._browser_sig.emit("open:" + (url or ""))
+
+    def browser_close(self) -> None:
+        """Thread-safe: NAVİGATÖR'ü kapat."""
+        self._win._browser_sig.emit("close")
+
+    def browser_new_tab(self, url: str = "") -> None:
+        """Thread-safe: yeni sekme aç (boşsa Google)."""
+        self._win._browser_sig.emit("newtab:" + (url or ""))
+
+    def browser_search(self, query: str) -> None:
+        """Thread-safe: Google'da ara."""
+        self._win._browser_sig.emit("search:" + (query or ""))
+
+    def browser_close_tab(self) -> None:
+        """Thread-safe: aktif sekmeyi kapat."""
+        self._win._browser_sig.emit("closetab")
+
+    def browser_set_dark(self, on: bool) -> None:
+        """Thread-safe: karanlık mod zorlamasını aç/kapat."""
+        self._win._browser_sig.emit("dark:" + ("1" if on else "0"))
+
+    def browser_set_zoom(self, pct: int) -> None:
+        """Thread-safe: varsayılan yakınlaştırma (%)."""
+        self._win._browser_sig.emit(f"zoom:{int(pct)}")
+
+    def browser_set_font(self, delta: int) -> None:
+        """Thread-safe: yazı boyutu değişimi (pt farkı)."""
+        self._win._browser_sig.emit(f"font:{int(delta)}")
+
+    def browser_read_page(self, timeout: float = 10.0) -> dict:
+        """Thread-safe: aktif sekmenin metnini okur (engelleyici).
+
+        Dönen dict: {"ok", "title", "url", "text", "error?"}.
+        Mehmet (arka plan thread'i) bunu çağırıp sayfa içeriğini
+        özetleyebilir / sorulara cevap verebilir.
+        """
+        import json as _json
+        import threading as _threading
+        import uuid as _uuid
+
+        token = _uuid.uuid4().hex
+        ev = _threading.Event()
+        rec = {"event": ev, "payload": ""}
+        win = self._win
+
+        win._page_waiters[token] = rec          # dict kaydı (GIL ile güvenli)
+        win._browser_sig.emit("readpage:" + token)
+
+        if not ev.wait(timeout):
+            win._page_waiters.pop(token, None)
+            return {"ok": False, "title": "", "url": "", "text": "",
+                    "error": "sayfa okuma zaman aşımı"}
+        try:
+            meta = _json.loads(rec["payload"])
+        except Exception:
+            return {"ok": False, "title": "", "url": "", "text": "",
+                    "error": "okuma yanıtı çözümlenemedi"}
+        return meta
+
+    # ── sesli sekme yönetimi + sayfa etkileşimi (thread-safe) ──────────────
+    def browser_switch_tab(self, index: int) -> None:
+        """Thread-safe: N. sekmeye geç (1-tabanlı)."""
+        self._win._browser_sig.emit(f"switchtab:{int(index)}")
+
+    def browser_close_all_tabs(self) -> None:
+        """Thread-safe: aktif sekme dışındaki tüm sekmeleri kapat."""
+        self._win._browser_sig.emit("closeall")
+
+    def browser_list_tabs(self, timeout: float = 5.0) -> str:
+        """Thread-safe: açık sekmeleri liste olarak döndürür (engelleyici)."""
+        import json as _json
+        import threading as _threading
+        import uuid as _uuid
+
+        token = _uuid.uuid4().hex
+        ev = _threading.Event()
+        rec = {"event": ev, "payload": ""}
+        win = self._win
+        win._page_waiters[token] = rec
+        win._browser_sig.emit("listtabs:" + token)
+        if not ev.wait(timeout):
+            win._page_waiters.pop(token, None)
+            return "Sekme listesi alınamadı (zaman aşımı)."
+        try:
+            return str(_json.loads(rec["payload"]).get("list", ""))
+        except Exception:
+            return "Sekme listesi çözümlenemedi."
+
+    def browser_click(self, selector: str = "", text: str = "") -> dict:
+        """Thread-safe: seçiciyle ya da görünür metinle öğeye tıkla."""
+        import json as _json
+        import threading as _threading
+        import uuid as _uuid
+
+        token = _uuid.uuid4().hex
+        ev = _threading.Event()
+        rec = {"event": ev, "payload": ""}
+        win = self._win
+        win._page_waiters[token] = rec
+        cmd = "click:" + token + "\x1f" + _json.dumps(
+            {"selector": selector, "text": text}, ensure_ascii=False)
+        win._browser_sig.emit(cmd)
+        if not ev.wait(8.0):
+            win._page_waiters.pop(token, None)
+            return {"ok": False, "error": "tıklama zaman aşımı"}
+        try:
+            return _json.loads(rec["payload"])
+        except Exception:
+            return {"ok": False, "error": "yanıt çözümlenemedi"}
+
+    def browser_type(self, selector: str, text: str,
+                     clear: bool = True) -> dict:
+        """Thread-safe: seçiciyle bulunan girişe metin yaz."""
+        import json as _json
+        import threading as _threading
+        import uuid as _uuid
+
+        token = _uuid.uuid4().hex
+        ev = _threading.Event()
+        rec = {"event": ev, "payload": ""}
+        win = self._win
+        win._page_waiters[token] = rec
+        cmd = "type:" + token + "\x1f" + _json.dumps(
+            {"selector": selector, "text": text, "clear": clear},
+            ensure_ascii=False)
+        win._browser_sig.emit(cmd)
+        if not ev.wait(8.0):
+            win._page_waiters.pop(token, None)
+            return {"ok": False, "error": "yazma zaman aşımı"}
+        try:
+            return _json.loads(rec["payload"])
+        except Exception:
+            return {"ok": False, "error": "yanıt çözümlenemedi"}
+
+    def browser_fill_form(self, fields: dict) -> dict:
+        """Thread-safe: çoklu form alanı doldur {"#ad": "değer", …}."""
+        import json as _json
+        import threading as _threading
+        import uuid as _uuid
+
+        token = _uuid.uuid4().hex
+        ev = _threading.Event()
+        rec = {"event": ev, "payload": ""}
+        win = self._win
+        win._page_waiters[token] = rec
+        cmd = "fillform:" + token + "\x1f" + _json.dumps(fields,
+                                                          ensure_ascii=False)
+        win._browser_sig.emit(cmd)
+        if not ev.wait(8.0):
+            win._page_waiters.pop(token, None)
+            return {"ok": False, "error": "form doldurma zaman aşımı"}
+        try:
+            return _json.loads(rec["payload"])
+        except Exception:
+            return {"ok": False, "error": "yanıt çözümlenemedi"}
+
+    def browser_scroll(self, direction: str = "down", amount: int = 600) -> None:
+        """Thread-safe: sayfayı kaydır (down|up)."""
+        d = "down" if str(direction).lower() == "down" else "up"
+        self._win._browser_sig.emit(f"scroll:{d}:{int(amount)}")
+
+    def browser_press_key(self, key: str) -> None:
+        """Thread-safe: aktif öğeye tuş gönder (Enter, Escape…)."""
+        import json as _json
+        k = (key or "Enter").strip()
+        self._win._browser_sig.emit(
+            "presskey:" + _json.dumps({"key": k}, ensure_ascii=False))
+
+    # ── VPN tek tık + adblock durum (thread-safe) ──────────────────────────
+    # ── izleme modu (watch party) ──────────────────────────────────────
+    def set_watch_party(self, on: bool) -> None:
+        """Thread-safe: izleme modu rozetini göster/kaldır."""
+        self._win._watch_sig.emit(bool(on))
+
+    def browser_active_url(self, timeout: float = 4.0) -> str:
+        """Thread-safe (engelleyici): NAVİGATÖR aktif sekmesinin adresi."""
+        import json as _json
+        import threading as _threading
+        import uuid as _uuid
+
+        token = _uuid.uuid4().hex
+        ev = _threading.Event()
+        rec = {"event": ev, "payload": ""}
+        win = self._win
+        win._page_waiters[token] = rec
+        win._browser_sig.emit("pageurl:" + token)
+        if not ev.wait(timeout):
+            win._page_waiters.pop(token, None)
+            return ""
+        try:
+            return str(_json.loads(rec["payload"]).get("url", ""))
+        except Exception:
+            return ""
+
+    def browser_vpn_toggle(self) -> None:
+        """Thread-safe: VPN'i tek tıkla aç/kapa (Chrome eklentisi gibi)."""
+        self._win._browser_sig.emit("vpntoggle")
+
+    def browser_vpn_state(self) -> dict:
+        """VPN anlık durumunu oku (ana thread'den; panel üzerinden)."""
+        b = self._win._browser
+        if b is None:
+            return {"active": False, "status": "NAVİGATÖR kurulu değil"}
+        vpn = getattr(b, "vpn", None)
+        if vpn is None:
+            return {"active": False, "status": "VPN modülü yok"}
+        return {"active": bool(vpn.is_active),
+                "status": vpn.status_text(),
+                "upstream": vpn.upstream_label(),
+                "port": vpn.relay.port}
+
+    def browser_adblock_state(self) -> dict:
+        """Adblock anlık durumunu oku."""
+        b = self._win._browser
+        if b is None:
+            return {"enabled": False, "blocked": 0, "exists": False}
+        eng = getattr(b, "adblock", None)
+        if eng is None:
+            return {"enabled": False, "blocked": 0, "exists": False}
+        return {"enabled": bool(eng.enabled),
+                "blocked": int(eng.stats.blocked),
+                "rules": int(eng.rule_count),
+                "exists": True}
+
+    def browser_adblock_toggle(self) -> None:
+        """Thread-safe: reklam engelleyiciyi aç/kapa."""
+        self._win._browser_sig.emit("abtoggle")
+
+    # ── çok adımlı görev zincirleri + medya araçları (thread-safe) ─────────
+    def browser_run_chain(self, task: str, query: str = "",
+                          timeout: float = 30.0) -> dict:
+        """Thread-safe: çok adımlı web görevi.
+
+        task: "youtube_play" (YouTube'da ara → ilk videoyu oynat)
+              | "google_first" (Google'da ara → ilk sonucu aç)
+        Dönüş: {"ok", "steps", "title", "url", "error?"}
+        """
+        import json as _json
+        import threading as _threading
+        import uuid as _uuid
+
+        token = _uuid.uuid4().hex
+        ev = _threading.Event()
+        rec = {"event": ev, "payload": ""}
+        win = self._win
+        win._page_waiters[token] = rec
+        win._browser_sig.emit("chain:" + token + "\x1f" + _json.dumps(
+            {"task": task, "query": query}, ensure_ascii=False))
+        if not ev.wait(timeout):
+            win._page_waiters.pop(token, None)
+            return {"ok": False, "steps": [], "title": "", "url": "",
+                    "error": "görev zaman aşımı"}
+        try:
+            return _json.loads(rec["payload"])
+        except Exception:
+            return {"ok": False, "steps": [], "title": "", "url": "",
+                    "error": "görev yanıtı çözümlenemedi"}
+
+    def browser_screenshot(self, timeout: float = 8.0) -> dict:
+        """Thread-safe: aktif sekmenin ekran görüntüsünü PNG kaydeder.
+        Dönüş: {"ok", "path", "error?"}"""
+        import json as _json
+        import threading as _threading
+        import uuid as _uuid
+
+        token = _uuid.uuid4().hex
+        ev = _threading.Event()
+        rec = {"event": ev, "payload": ""}
+        win = self._win
+        win._page_waiters[token] = rec
+        win._browser_sig.emit("shot:" + token)
+        if not ev.wait(timeout):
+            win._page_waiters.pop(token, None)
+            return {"ok": False, "error": "ekran görüntüsü zaman aşımı"}
+        try:
+            return _json.loads(rec["payload"])
+        except Exception:
+            return {"ok": False, "error": "yanıt çözümlenemedi"}
+
+    def browser_translate(self, target: str = "tr",
+                          timeout: float = 25.0) -> dict:
+        """Thread-safe: aktif sayfayı hedef dile çevirip overlay'de göster.
+        Dönüş: {"ok", "text", "from", "error?"}"""
+        import json as _json
+        import threading as _threading
+        import uuid as _uuid
+
+        token = _uuid.uuid4().hex
+        ev = _threading.Event()
+        rec = {"event": ev, "payload": ""}
+        win = self._win
+        win._page_waiters[token] = rec
+        win._browser_sig.emit("translate:" + token + "\x1f" + target)
+        if not ev.wait(timeout):
+            win._page_waiters.pop(token, None)
+            return {"ok": False, "error": "çeviri zaman aşımı"}
+        try:
+            return _json.loads(rec["payload"])
+        except Exception:
+            return {"ok": False, "error": "yanıt çözümlenemedi"}
+
+    def browser_vpn_speed_test(self, auto_connect: bool = False,
+                               timeout: float = 60.0) -> dict:
+        """Thread-safe: VPN profillerini ölç (auto_connect=True ise en
+        hızlıya bağlan). Dönüş: {"ok", "results", "selected?", "error?"}
+        (Ölçüm arka planda; bu çağrı ölçüm bitene kadar bekler.)"""
+        import json as _json
+        import threading as _threading
+        import uuid as _uuid
+
+        token = _uuid.uuid4().hex
+        ev = _threading.Event()
+        rec = {"event": ev, "payload": ""}
+        win = self._win
+        win._page_waiters[token] = rec
+        win._browser_sig.emit("vpnspeed:" + token + "\x1f"
+                              + ("1" if auto_connect else "0"))
+        if not ev.wait(timeout):
+            win._page_waiters.pop(token, None)
+            return {"ok": False, "error": "hız testi zaman aşımı"}
+        try:
+            return _json.loads(rec["payload"])
+        except Exception:
+            return {"ok": False, "error": "yanıt çözümlenemedi"}
+
+    def browser_capture(self, timeout: float = 8.0) -> dict:
+        """Thread-safe: aktif sekmenin PNG görüntüsünü yakalar.
+        Dönüş: {"ok", "path", "png": bytes, "mime", "title", "url", "error?"}"""
+        import json as _json
+        import threading as _threading
+        import uuid as _uuid
+
+        token = _uuid.uuid4().hex
+        ev = _threading.Event()
+        rec = {"event": ev, "payload": ""}
+        win = self._win
+        win._page_waiters[token] = rec
+        win._browser_sig.emit("cap:" + token)
+        if not ev.wait(timeout):
+            win._page_waiters.pop(token, None)
+            return {"ok": False, "error": "görüntü yakalama zaman aşımı"}
+        try:
+            data = _json.loads(rec["payload"])
+        except Exception:
+            return {"ok": False, "error": "yanıt çözümlenemedi"}
+        if data.get("ok") and isinstance(data.get("png"), str):
+            import base64 as _b64u
+            try:
+                data["png"] = _b64u.b64decode(data["png"])
+            except Exception:
+                data["png"] = b""
+        return data
+
+    def browser_vpn_connect_word(self, word: str = "",
+                                 timeout: float = 30.0) -> dict:
+        """Thread-safe: tek kelimeyle VPN'e bağlan ('eu', 'japonya',
+        'en hızlı'…). Dönüş: {"ok", "message", "status"}"""
+        import json as _json
+        import threading as _threading
+        import uuid as _uuid
+
+        token = _uuid.uuid4().hex
+        ev = _threading.Event()
+        rec = {"event": ev, "payload": ""}
+        win = self._win
+        win._page_waiters[token] = rec
+        win._browser_sig.emit("vpnconn:" + token + "\x1f" + (word or ""))
+        if not ev.wait(timeout):
+            win._page_waiters.pop(token, None)
+            return {"ok": False, "message": "VPN bağlantı zaman aşımı",
+                    "status": ""}
+        try:
+            return _json.loads(rec["payload"])
+        except Exception:
+            return {"ok": False, "message": "yanıt çözümlenemedi",
+                    "status": ""}
+
+    @property
+    def browser_visible(self) -> bool:
+        return self._win._browser_open
 
     @property
     def assistant_name(self) -> str:

@@ -1,9 +1,10 @@
 {
     "gemini_api_key": "AQ.Ab8RN6LLr6AGgwBnE4kDXr8nwoopyHDybNSPsm2vZWF5HFFu2Q",
     "os_system": "windows",
-    "morning_brief_enabled": false,
+    "morning_brief_enabled": true,
     "assistant_name": "Mehmet",
-    "user_name": "BaranTi",
-    "ui_color": "#00ff21",
-    "camera_index": 0
+    "user_name": "Baran",
+    "ui_color": "#006cff",
+    "camera_index": 0,
+    "nvapi_key": "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"
 }

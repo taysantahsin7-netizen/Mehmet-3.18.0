@@ -33,6 +33,8 @@ _CORE: list[tuple[str, str]] = [
     ("send2trash",         "send2trash"),
     ("pptx",               "python-pptx"),
     ("youtube_transcript_api", "youtube-transcript-api"),
+    # NAVİGATÖR (dahili tarayıcı) çekirdeği
+    ("PyQt6.QtWebEngineWidgets", "PyQt6-WebEngine"),
 ]
 
 # Windows-only (pywinauto, pycaw, win10toast, comtypes)

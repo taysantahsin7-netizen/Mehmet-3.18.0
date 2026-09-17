@@ -16,6 +16,7 @@ if _platform.system() == "Windows":
 # ─────────────────────────────────────────────────────────────────────────────
 
 import asyncio
+import base64
 import re
 import threading
 import time
@@ -54,9 +55,13 @@ from actions.computer_control  import computer_control
 from actions.game_updater      import game_updater
 from actions.system_monitor    import SystemMonitor, get_system_status
 from actions.proactive         import ProactiveEngine
+from core.watch_party          import (
+    WatchParty,
+    list_watch_sessions as _wp_list_sessions,
+    search_watch_memory as _wp_search_sessions,
+)
 from actions.web_search        import _news as _fetch_news_sync
 from memory.config_manager     import get_brief_enabled
-from core.mcp_manager          import mcp_manager
 
 SOURCE_FOLDER = r"C:\Users\taysa\Downloads"
 
@@ -96,6 +101,22 @@ BASE_DIR        = get_base_dir()
 API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
 PROMPT_PATH     = BASE_DIR / "core" / "prompt.txt"
 LIVE_MODEL          = "models/gemini-2.5-flash-native-audio-preview-12-2025"
+
+# ── izleme hafızası köprüleri (core.watch_party'dan) ──────────────────────
+def wp_memory_list(limit: int = 5):
+    """Kayıtlı izleme oturumları (en yeni önce). Import hatasında boş liste."""
+    try:
+        return _wp_list_sessions(limit)
+    except Exception:
+        return []
+
+
+def wp_memory_search(query: str, limit: int = 3):
+    """'geçen izlediğimiz video neydi' için hafıza araması."""
+    try:
+        return _wp_search_sessions(query, limit)
+    except Exception:
+        return []
 CHANNELS            = 1
 SEND_SAMPLE_RATE    = 16000
 RECEIVE_SAMPLE_RATE = 24000
@@ -315,6 +336,228 @@ TOOL_DECLARATIONS = [
                 "path":        {"type": "STRING", "description": "Save path for screenshot"},
                 "incognito":   {"type": "BOOLEAN", "description": "Open in private/incognito mode"},
                 "clear_first": {"type": "BOOLEAN", "description": "Clear field before typing (default: true)"},
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "read_browser_page",
+        "description": (
+            "Mehmet'in ANA PENCERESİNDEKİ dahili tarayıcının (NAVİGATÖR) aktif "
+            "sekmesinin metin içeriğini okur. Kullanıcı 'bu sayfada ne diyor', "
+            "'şunu özetle', 'sayfayı oku', 'burada ne yazıyor', 'içerideki sayfayı "
+            "anlat' derse ÖNCE navigate_browser ile sayfayı aç, SONRA BUNU çağır "
+            "ve içeriğe göre yanıt ver. Yanıt: başlık + URL + sayfa metni (max ~24k)."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {},
+            "required": []
+        }
+    },
+    {
+        "name": "navigate_browser",
+        "description": (
+            "Mehmet'in ANA PENCEREsinin içindeki dahili tarayıcıyı (NAVİGATÖR) kontrol eder. "
+            "Kullanıcı 'burada aç', 'içerde aç', 'dahili tarayıcı', 'sen aç' derse veya siteyi "
+            "kendi gözleriyle izlemesi isteniyorsa BUNU kullan; normal tarayıcı için browser_control'u kullan. "
+            "Actions: open (URL aç), search (Google'da ara), new_tab, close_tab, close, toggle, dark_mode, zoom."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "description": "open | search | new_tab | close_tab | close | toggle | dark_mode | zoom"},
+                "url":    {"type": "STRING", "description": "URL for open / new_tab (e.g. https://youtube.com)"},
+                "query":  {"type": "STRING", "description": "Search query for search action"},
+                "enabled": {"type": "BOOLEAN", "description": "dark_mode: true=on, false=off"},
+                "percent": {"type": "INTEGER", "description": "zoom: 67..200"}
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "browser_tab_control",
+        "description": (
+            "NAVİGATÖR'ün sekmelerini ses komutlarıyla yönetir. Kullanıcı 'ikinci sekmeye geç', "
+            "'tüm sekmeleri kapat', 'sekmeleri listele', 'kaç sekme açık' derse BUNU çağır."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "description": "switch | close_all | list"},
+                "index":  {"type": "INTEGER", "description": "switch: 1-tabanlı sekme numarası"}
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "browser_interact",
+        "description": (
+            "NAVİGATÖR'deki aktif sayfada İŞLEM yapar: tıklama, metin yazma, form doldurma, "
+            "kaydırma, tuş gönderme. Kullanıcı 'şuraya tıkla', 'şunu yaz', 'formu doldur', "
+            "'aşağı kaydır' derse BUNU kullan. Öğe hedefi: CSS seçicisi YA DA görünür metin."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action":   {"type": "STRING", "description": "click | type | fill_form | scroll | press_key"},
+                "selector": {"type": "STRING", "description": "CSS selector (örn. #searchbox, input[name=q])"},
+                "text":     {"type": "STRING", "description": "Yazılacak metin veya tıklanacak görünür metin"},
+                "fields":   {"type": "OBJECT", "description": "fill_form: {\"#ad\": \"Mehmet\", \"#mail\": \"x@y.z\"}"},
+                "direction": {"type": "STRING", "description": "scroll: down | up (default down)"},
+                "amount":   {"type": "INTEGER", "description": "scroll piksel (default 600)"},
+                "key":      {"type": "STRING", "description": "press_key: Enter, Escape, Tab…"}
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "browser_vpn",
+        "description": (
+            "NAVİGATÖR'ün VPN'ini yönetir: tek tıkla aç/kapa (toggle), durum raporu veya "
+            "TEK KELİMEYLE bağlanma (connect_word: 'eu', 'japonya', 'en hızlı'… — bölge "
+            "ölçülür ve en iyi profil seçilir). Kullanıcı 'vpn'i aç', 'vpn'i kapat', "
+            "'vpn açık mı', 'japonya vpn'ine bağlan' derse BUNU çağır."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "description": "toggle | status | connect_word"},
+                "word":   {"type": "STRING", "description": "connect_word: bölge/anahtar kelime ('eu', 'jp', 'en hızlı'…)"}
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "browser_adblock",
+        "description": (
+            "NAVİGATÖR'ün reklam engelleyicisini yönetir: aç/kapa veya engel istatistiği. "
+            "Kullanıcı 'reklam engelleyiciyi kapat', 'kaç reklam engellendi' derse BUNU çağır."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action":  {"type": "STRING", "description": "toggle | enable | disable | status"}
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "web_memory",
+        "description": (
+            "Mehmet'in WEB HAFIZASI: gezdiği sayfaların özetleri burada birikir. "
+            "Kullanıcı 'nereleri gezmiştik', 'o siteyi hatırlıyor musun', 'web geçmişimdeki "
+            "özetleri anlat', 'hafızadan şu siteyi sil', 'haftalık web raporumu üret', "
+            "'aylık raporu çıkar', 'raporu e-posta ile gönder' derse BUNU çağır."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "description": "list | overview | forget | weekly_report | monthly_report | email_report"},
+                "url_fragment": {"type": "STRING", "description": "forget: silinecek kayıtların URL parçası"},
+                "limit": {"type": "INTEGER", "description": "list: kaç kayıt (default 8)"}
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "web_task",
+        "description": (
+            "ÇOK ADIMLI WEB GÖREVİ — tek komutta zincir. Kullanıcı 'YouTube'da X ara ve "
+            "ilk videoyu oynat' derse task=youtube_play; 'X'i ara ve ilk sonucu aç' derse "
+            "task=google_first; 'X'i ara ve Wikipedia özetini oku' derse task=wikipedia_summary "
+            "(özetteki summary alanını TÜRKÇE'ye çevirip oku); 'haberleri aç ve başlıkları "
+            "özetle' / 'gündem ne' derse task=news_headlines (headlines listesini kısa özetle). "
+            "NAVİGATÖR'de açılır, adımlar sırayla yürütülür."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "task":  {"type": "STRING", "description": "youtube_play | google_first | wikipedia_summary | news_headlines"},
+                "query": {"type": "STRING", "description": "Aranacak şey (news_headlines için gerekmez)"}
+            },
+            "required": ["task"]
+        }
+    },
+    {
+        "name": "browser_media",
+        "description": (
+            "NAVİGATÖR medya araçları: aktif sayfanın EKRAN GÖRÜNTÜSÜNÜ al (screenshot) "
+            "veya sayfayı hedef dile ÇEVİR ve ekranda göster (translate). Kullanıcı "
+            "'ekran görüntüsü al', 'bu sayfayı İngilizce'ye çevir' derse BUNU çağır."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "description": "screenshot | translate"},
+                "language": {"type": "STRING", "description": "translate: hedef dil kodu (tr, en, de…; default tr)"}
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "browser_vision",
+        "description": (
+            "NAVİGATÖR'ün aktif sayfasının GÖRÜNTÜSÜNÜ analiz eder: ekran görüntüsü alınıp "
+            "sana gönderilir, sen GÖRSEL OLARAK inceler. Kullanıcı 'bu sayfadaki hatayı bul', "
+            "'bu sayfada ne görüyorsun', 'sayfanın görselini analiz et', 'tasarımı değerlendir' "
+            "derse BUNU çağır. Görüntü sana doğrudan gelir — gördüğünü anlat."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "question": {"type": "STRING", "description": "Görüntü hakkında cevaplanacak soru (örn. 'sayfadaki hatayı bul')"}
+            }
+        }
+    },
+    {
+        "name": "watch_party",
+        "description": (
+            "İZLEME MODU: kullanıcının ekranını canlı izler, onunla birlikte video/"
+            "dizi/video oyunu izler, seyrek aralıklarla kısa ve esprili yorumlar yapar. "
+            "Kullanıcı 'benimle izle', 'ekranımı izle', 'izlemeyi bırak', 'yeter izleme' "
+            "derse BUNU çağır. Başlatınca ekran görüntüleri sana akar — kısa konuş, "
+            "arada bir yorum yap, her kareye tepki verme. "
+            "Ayrıca: 'şimdiye kadar izlediklerimizi özetle' → action=summary; "
+            "'geçen izlediklerimiz nelerdi' → action=memory; "
+            "'geçen izlediğimiz video neydi' → action=find, query=..."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "description": "start | stop | toggle | summary | memory | find (default: toggle)"},
+                "query":  {"type": "STRING", "description": "find: hafızada aranacak kelime"}
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "ask_nemotron",
+        "description": (
+            "DERİN DÜŞÜNCE KATMANI — NVIDIA Nemotron 3 Ultra (550B) modeline soru sorar. "
+            "Karmaşık analiz, strateji, çok adımlı planlama, uzun muhakeme gerektiren "
+            "sorularda KENDİ bilgin yerine bu modeli kullan ve sonucu kendi tarzınla "
+            "Türkçe özetle. Ciddi modda (MehmetNEO) her derin soru için BUNU çağır."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "prompt": {"type": "STRING", "description": "Nemotron'a iletilecek soru/görev (arka planı da ekle)"}
+            },
+            "required": ["prompt"]
+        }
+    },
+    {
+        "name": "browser_vpn_speed",
+        "description": (
+            "VPN profillerinin GERÇEK gecikmesini ölçer (speed_test) ve istenirse "
+            "otomatik olarak en hızlıya bağlanır (auto). Kullanıcı 'vpn hızını ölç', "
+            "'en hızlı vpn'e bağlan' derse BUNU çağır."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "description": "speed_test | auto"}
             },
             "required": ["action"]
         }
@@ -584,19 +827,14 @@ class MehmetLive:
         self.ui.on_text_command   = self._on_text_command
         self.ui.on_remote_clicked = self._make_remote_key
         self.ui.on_interrupt      = self.interrupt
-        self.ui.on_mcp_updated    = self._on_mcp_updated
         self._turn_done_event: asyncio.Event | None = None
         self._dashboard     = None
         self._briefing_sent    = False          # morning briefing fires once per process
+        self._weekly_report_checked = False    # haftalık web raporu kontrolü (oturum başına bir)
         self._sys_monitor      = SystemMonitor()  # persistent cooldown state
         self._proactive        = ProactiveEngine()
         self._last_user_speech = time.monotonic()  # updated on every user utterance
-
-    def _on_mcp_updated(self):
-        """Called from UI when MCP plugins are installed, removed, or toggled."""
-        if self._loop and self.session:
-            print("[Mehmet] 🔌 MCP plugins updated — reloading session...")
-            asyncio.run_coroutine_threadsafe(self._restart_session(), self._loop)
+        self._watch_party      = None   # İzliyorum modu — oturum başına yeniden kurulur
 
     def _make_remote_key(self):
         """Called from Qt main thread when user presses Remote Control."""
@@ -630,8 +868,97 @@ class MehmetLive:
         elif not self.ui.muted:
             self.ui.set_state("LISTENING")
 
+    def _make_watch_party(self) -> "WatchParty":
+        """Bu oturumun canlı bağlantısına bağlı İzliyorum modu kurar.
+        Kareler, yorumlar ve sistem konuşma bağlamı bu bağlantıya gider."""
+        loop = self._loop
+
+        async def _send_frame(parts: list) -> None:
+            if self.session:
+                await self.session.send_client_content(
+                    turns={"parts": parts}, turn_complete=True)
+
+        def send_frame(parts: list) -> None:
+            asyncio.run_coroutine_threadsafe(_send_frame(parts), loop)
+
+        def send_text(text: str) -> None:
+            if not self.session:
+                return
+            asyncio.run_coroutine_threadsafe(
+                self.session.send_client_content(
+                    turns={"parts": [{"text": text}]}, turn_complete=True),
+                loop)
+
+        def write_log(msg: str) -> None:
+            self.ui.write_log(msg)
+
+        def get_url() -> str:
+            try:
+                return self.ui.browser_active_url(timeout=3.0)
+            except Exception:
+                return ""
+
+        async def _send_preview(png: bytes) -> None:
+            if getattr(self, "_dashboard", None):
+                try:
+                    await self._dashboard.broadcast({
+                        "type": "watch_preview",
+                        "img": base64.b64encode(png).decode("ascii"),
+                        "ts": datetime.now().isoformat(),
+                    })
+                except Exception:
+                    pass
+
+        def send_preview(png: bytes) -> None:
+            asyncio.run_coroutine_threadsafe(_send_preview(png), loop)
+
+        def on_session_end(summary: str, stats: dict) -> None:
+            """İzleme oturumu kapandı — özeti sesle oku (hafızaya worker yazdı)."""
+            try:
+                mins = max(1, int(stats.get("duration_s", 0)) // 60)
+                self.speak(f"İzleme oturumu bitti — {mins} dakika izledik, "
+                           "özetini hafızaya kaydettim.")
+                if self._dashboard:
+                    asyncio.run_coroutine_threadsafe(
+                        self._dashboard.broadcast({
+                            "type": "sys",
+                            "text": f"📺 İzleme oturumu kaydedildi ({mins} dk).",
+                        }), loop)
+            except Exception:
+                pass
+
+        wp = WatchParty(
+            send_frame=send_frame,
+            send_text=send_text,
+            write_log=write_log,
+            get_url=get_url,
+            state_cb=self._on_watch_state,
+            send_preview=send_preview,
+            on_session_end=on_session_end,
+        )
+        return wp
+
+    def _on_watch_state(self, on: bool) -> None:
+        """İzleme modu açıldı/kapandı — rozet + telefona durum yayını."""
+        try:
+            self.ui.set_watch_party(on)
+        except Exception:
+            pass
+        if self._dashboard and self._loop:
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    self._dashboard.broadcast({"type": "watch_state", "on": bool(on)}),
+                    self._loop)
+            except Exception:
+                pass
+
     def interrupt(self) -> None:
         """Stop Mehmet mid-speech: drain queued audio and open mic immediately."""
+        # İzliyorum modu: kullanıcı çarptı → izleme otomatik kapansın
+        wp = self._watch_party
+        if wp is not None and wp.active:
+            wp.stop()
+            self._watch_party = None
         self._interrupted = True
         q = self.audio_in_queue
         if q:
@@ -664,6 +991,71 @@ class MehmetLive:
         short = str(error)[:120]
         self.ui.write_log(f"ERR: {tool_name} — {short}")
         self.speak(f"Sir, {tool_name} encountered an error. {short}")
+
+    # ── haftalık web raporu alışkanlığı ───────────────────────────────────────
+    async def _maybe_send_weekly_report(self) -> None:
+        """7 günde bir: web hafızasındaki gezintilerden rapor üretip sesle okur;
+        30 günde bir AYLIK DERİN rapor da üretir. Raporlar ekrana bırakılır,
+        telefon paneline bildirilir ve e-posta bildirimi açıksa gönderilir.
+        LLM çağrısı arka plan thread'inde; bekleme async — oturumu bloklamaz."""
+        try:
+            from browser import web_memory as _wm
+        except Exception:
+            return
+        await asyncio.sleep(20)   # açılış konuşmaları dinsin
+        loop = asyncio.get_event_loop()
+
+        async def _deliver(kind: str, title: str, report: str) -> None:
+            """Raporu ekran + telefon + e-posta ile dağıtır."""
+            self.ui.write_log(f"SİSTEM: {title} üretildi.")
+            self.ui.show_content(title, report[:4000])
+            # telefon paneline bildirim
+            if getattr(self, "_dashboard", None):
+                try:
+                    await self._dashboard.broadcast({
+                        "type": "report", "title": title,
+                        "text": report[:1500],
+                        "ts": datetime.now().isoformat()})
+                except Exception:
+                    pass
+            # e-posta bildirimi (config/email_notify.json enabled ise)
+            cfg = _wm.email_config()
+            if cfg.get("enabled"):
+                ok, msg = await loop.run_in_executor(
+                    None, lambda: _wm.email_report(
+                        f"Mehmet {title} — {datetime.now().strftime('%d.%m.%Y')}",
+                        report))
+                self.ui.write_log(f"SİSTEM: {title} e-posta — {msg}")
+
+        # ── haftalık ──
+        if _wm.due_for_report():
+            try:
+                report = await loop.run_in_executor(
+                    None, _wm.generate_weekly_report)
+            except Exception as e:
+                self.ui.write_log(f"ERR: weekly_report — {e}")
+                report = ""
+            if report and not report.startswith(("Haftalık rapor için",
+                                                 "Haftalık rapor üretilemedi")):
+                await _deliver("weekly", "HAFTALIK WEB RAPORU", report)
+                if self.session:
+                    self.speak("Haftalık web gezinti raporun hazır — "
+                               "ekrana bıraktım, istersen okuyayım.")
+
+        # ── aylık derin rapor ──
+        if _wm.due_for_monthly_report():
+            try:
+                mrep = await loop.run_in_executor(
+                    None, _wm.generate_monthly_report)
+            except Exception as e:
+                self.ui.write_log(f"ERR: monthly_report — {e}")
+                mrep = ""
+            if mrep and not mrep.startswith(("Aylık rapor için",
+                                             "Aylık rapor üretilemedi")):
+                await _deliver("monthly", "AYLIK DERİN WEB RAPORU", mrep)
+                if self.session:
+                    self.speak("Bu ayki gezinilerden derin analiz raporu "
+                               "ürettim — ekrana bıraktım.")
 
     async def _restart_session(self) -> None:
         """Ses konfigürasyonu değişince çağrılır — oturumu kapar, run() yeniden bağlanr."""
@@ -704,23 +1096,31 @@ class MehmetLive:
             voice_name = "Charon"
 
         sys_prompt = _load_system_prompt()
-        parts = [time_ctx, identity_ctx, sys_prompt]
 
-        mcp_decls = mcp_manager.get_active_declarations()
-        all_declarations = list(TOOL_DECLARATIONS) + mcp_decls
-        if mcp_decls:
-            mcp_tool_names = ", ".join([d["name"] for d in mcp_decls])
-            parts.append(
-                f"\n[MCP PLUGINS ACTIVE]\n"
-                f"You have access to external MCP tools: {mcp_tool_names}. "
-                f"Always call the appropriate tool when asked to perform external/plugin tasks.\n"
+        # İzliyorum modu davranış kuralları — yalnızca mod açıkken bağlama girer
+        watch_ctx = ""
+        _wp = getattr(self, "_watch_party", None)
+        if _wp is not None and _wp.active:
+            watch_ctx = (
+                "\n\n[İZLEME MODU AKTİF]\n"
+                "Şu an kullanıcının ekranını canlı izliyorsun (saniyelik kareler geliyor).\n"
+                "- Onunla AYNI ortamdasın: izlediği video/dizi/oyun hakkında sohbet ediyormuşsun gibi konuş.\n"
+                "- Sadece ekran karesi gönderildiğinde konuş; kullanıcının mikrofonundan gelen her söze "
+                "cevap verme — video/dizi sesleri de duyabilirsin, onlar kullanıcıya ait DEĞİLDİR.\n"
+                "- Yorumların TEK cümle olsun (maks ~20 kelime), espirili ama abartısız; her kareye "
+                "tepki verme, sıradan anlarda sessiz kal ('...' yazmak yerine hiçbir şey söyleme).\n"
+                "- İlginç bir olay, şaşırtıcı an veya komik replik görünce yorum yap; aksi halde sus.\n"
+                "- Kullanıcının diliyle konuş (Türkçe ise Türkçe) ve ona 'BaranTi' diye hitap et.\n"
             )
-            print(f"[Mehmet] 🔌 {len(mcp_decls)} MCP tool(s) registered in Gemini session.")
+
+        parts = [time_ctx, identity_ctx, sys_prompt]
+        if watch_ctx:
+            parts.append(watch_ctx)
 
         return types.LiveConnectConfig(
             response_modalities=["AUDIO"],
             system_instruction="\n".join(parts),
-            tools=[{"function_declarations": all_declarations}],
+            tools=[{"function_declarations": TOOL_DECLARATIONS}],
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(
@@ -766,6 +1166,288 @@ class MehmetLive:
             elif name == "browser_control":
                 r = await loop.run_in_executor(None, lambda: browser_control(parameters=args, player=self.ui))
                 result = r or "Done."
+
+            elif name == "navigate_browser":
+                act = (args.get("action") or "open").lower()
+                ui = self.ui
+                url = args.get("url") or ""
+                query = args.get("query") or ""
+                if act == "open" and url:
+                    ui.browser_open(url)
+                    result = f"NAVİGATÖR'de açıldı: {url}"
+                elif act == "search" and query:
+                    ui.browser_search(query)
+                    result = f"NAVİGATÖR'de arandı: {query}"
+                elif act == "new_tab":
+                    ui.browser_new_tab(url)
+                    result = "Yeni sekme açıldı."
+                elif act == "close_tab":
+                    ui.browser_close_tab()
+                    result = "Sekme kapatıldı."
+                elif act == "close":
+                    ui.browser_close()
+                    result = "NAVİGATÖR kapatıldı, Mehmet'e dönüldü."
+                elif act == "toggle":
+                    ui.browser_toggle()
+                    result = "NAVİGATÖR değişti."
+                elif act == "dark_mode":
+                    ui.browser_set_dark(bool(args.get("enabled", True)))
+                    result = "Karanlık mod güncellendi."
+                elif act == "zoom":
+                    pct = max(30, min(300, int(args.get("percent", 100))))
+                    ui.browser_set_zoom(pct)
+                    result = f"Yakınlaştırma %{pct}."
+                else:
+                    result = "Bilinmeyen navigate_browser eylemi."
+
+            elif name == "read_browser_page":
+                meta = self.ui.browser_read_page()
+                if meta.get("ok"):
+                    result = (
+                        f"SAYFA: {meta.get('title','')} | {meta.get('url','')}\n"
+                        f"İÇERİK:\n{meta.get('text','')[:12000]}"
+                    )
+                    result += (
+                        "\n(Yukarıdaki içeriği kullanıcıya TÜRKÇE özetle; "
+                        "soru sorduysa doğrudan cevapla.)"
+                    )
+                    # web hafızası: sayfayı arka planda özetleyip kaydet
+                    try:
+                        from browser.web_memory import record_visit_summary
+                        loop.run_in_executor(
+                            None,
+                            lambda: record_visit_summary(
+                                meta.get("title", ""), meta.get("url", ""),
+                                meta.get("text", "")))
+                    except Exception:
+                        pass
+                else:
+                    result = ("Sayfa okunamadı: "
+                              + (meta.get("error") or "bilinmeyen hata")
+                              + ". Önce navigate_browser(open) ile sayfa açmak gerekebilir.")
+
+            elif name == "browser_tab_control":
+                act = (args.get("action") or "list").lower()
+                if act == "switch":
+                    idx = int(args.get("index", 1))
+                    self.ui.browser_switch_tab(idx)
+                    result = f"{idx}. sekmeye geçildi."
+                elif act == "close_all":
+                    self.ui.browser_close_all_tabs()
+                    result = "Diğer tüm sekmeler kapatıldı."
+                else:
+                    result = self.ui.browser_list_tabs()
+
+            elif name == "browser_interact":
+                act = (args.get("action") or "").lower()
+                ui = self.ui
+                if act == "click":
+                    r = ui.browser_click(selector=args.get("selector", ""),
+                                         text=args.get("text", ""))
+                    result = ("Tıklama başarılı." if r.get("ok")
+                              else "Tıklama başarısız: " + r.get("error", "?"))
+                elif act == "type":
+                    r = ui.browser_type(args.get("selector", ""),
+                                        args.get("text", ""))
+                    result = ("Metin yazıldı." if r.get("ok")
+                              else "Yazma başarısız: " + r.get("error", "?"))
+                elif act == "fill_form":
+                    r = ui.browser_fill_form(args.get("fields") or {})
+                    result = (f"Form dolduruldu ({r.get('filled', 0)} alan)."
+                              if r.get("ok")
+                              else "Form doldurulamadı: " + r.get("error", "?"))
+                elif act == "scroll":
+                    ui.browser_scroll(args.get("direction", "down"),
+                                      int(args.get("amount", 600)))
+                    result = "Sayfa kaydırıldı."
+                elif act == "press_key":
+                    ui.browser_press_key(args.get("key", "Enter"))
+                    result = f"Tuş gönderildi: {args.get('key', 'Enter')}"
+                else:
+                    result = "Bilinmeyen browser_interact eylemi."
+
+            elif name == "browser_vpn":
+                act = (args.get("action") or "status").lower()
+                if act == "toggle":
+                    self.ui.browser_vpn_toggle()
+                    import time as _t
+                    _t.sleep(0.3)   # relay hedef değişimi otursun
+                    st = self.ui.browser_vpn_state()
+                    result = ("VPN AÇIK — " + st.get("status", "")
+                              if st.get("active") else "VPN KAPALI — doğrudan bağlantı.")
+                elif act == "connect_word":
+                    word = args.get("word", "")
+                    res = await loop.run_in_executor(
+                        None, lambda: self.ui.browser_vpn_connect_word(word))
+                    result = res.get("message", "")
+                    if res.get("status"):
+                        result += f" ({res['status']})"
+                else:
+                    st = self.ui.browser_vpn_state()
+                    result = ("VPN AÇIK — " + st.get("status", "")
+                              + f" (yerel aktarma :{st.get('port', '?')})"
+                              if st.get("active")
+                              else "VPN KAPALI — trafik doğrudan akıyor.")
+
+            elif name == "browser_adblock":
+                act = (args.get("action") or "status").lower()
+                st0 = self.ui.browser_adblock_state()
+                if not st0.get("exists", True):
+                    result = "NAVİGATÖR kurulu değil."
+                elif act == "toggle":
+                    self.ui.browser_adblock_toggle()
+                    st = self.ui.browser_adblock_state()
+                    result = ("Reklam engelleyici AÇIK."
+                              if st.get("enabled")
+                              else "Reklam engelleyici KAPALI.")
+                elif act == "enable":
+                    if not st0.get("enabled"):
+                        self.ui.browser_adblock_toggle()
+                    result = "Reklam engelleyici AÇIK."
+                elif act == "disable":
+                    if st0.get("enabled"):
+                        self.ui.browser_adblock_toggle()
+                    result = "Reklam engelleyici KAPALI."
+                else:
+                    st = self.ui.browser_adblock_state()
+                    result = (f"Reklam engelleyici "
+                              f"{'AÇIK' if st.get('enabled') else 'KAPALI'} — "
+                              f"bu oturumda {st.get('blocked', 0)} istek "
+                              f"engellendi ({st.get('rules', 0)} kural).")
+
+            elif name == "web_memory":
+                from browser import web_memory as _wm
+                act = (args.get("action") or "list").lower()
+                if act == "list":
+                    result = _wm.web_memory_list(
+                        int(args.get("limit", 8)))
+                elif act == "overview":
+                    result = _wm.web_memory_overview()
+                elif act == "weekly_report":
+                    result = await loop.run_in_executor(
+                        None, lambda: _wm.generate_weekly_report(force=True))
+                    self.speak("Haftalık web raporun hazır.")
+                elif act == "monthly_report":
+                    result = await loop.run_in_executor(
+                        None, lambda: _wm.generate_monthly_report(force=True))
+                    self.ui.show_content("AYLIK DERİN WEB RAPORU", result[:4000])
+                    self.speak("Aylık derin web raporun hazır — ekrana bıraktım.")
+                elif act == "email_report":
+                    kind = (args.get("kind") or "weekly").lower()
+                    ok, msg = await loop.run_in_executor(
+                        None, lambda: _wm.send_last_report_email(kind))
+                    result = msg
+                    self.speak("Rapor gönderildi." if ok
+                               else f"Rapor gönderilemedi. {msg}")
+                elif act == "forget":
+                    n = _wm.web_memory_forget(
+                        args.get("url_fragment", ""))
+                    result = (f"{n} web hafıza kaydı silindi."
+                              if n else "Eşleşen kayıt bulunamadı.")
+                else:
+                    result = "Bilinmeyen web_memory eylemi."
+
+            elif name == "web_task":
+                task = (args.get("task") or "").lower()
+                query = args.get("query", "")
+                if not query and task != "news_headlines":
+                    result = "Arama terimi gerekli."
+                elif task not in ("youtube_play", "google_first",
+                                  "wikipedia_summary", "news_headlines"):
+                    result = (f"Bilinmeyen görev: {task} — geçerliler: "
+                              "youtube_play, google_first, wikipedia_summary, "
+                              "news_headlines")
+                else:
+                    res = await loop.run_in_executor(
+                        None,
+                        lambda: self.ui.browser_run_chain(task, query, 40.0))
+                    if res.get("ok"):
+                        if task == "wikipedia_summary" and res.get("summary"):
+                            result = (f"WIKIPEDIA ÖZETİ — {res.get('title', '')}\n"
+                                      f"{res['summary'][:800]}\n"
+                                      "(Bunu TÜRKÇE olarak kullanıcıya OKU.)")
+                        elif task == "news_headlines" and res.get("headlines"):
+                            heads = res["headlines"][:8]
+                            result = ("GÜNDEM BAŞLIKLARI:\n"
+                                      + "\n".join(f"- {h}" for h in heads)
+                                      + "\n(Kullanıcıya TÜRKÇE kısa gündem "
+                                        "özetı ver.)")
+                        else:
+                            result = (f"GÖREV TAMAM — adımlar: "
+                                      f"{' → '.join(res.get('steps', []))}. "
+                                      f"Sayfa: {res.get('title', '')} | "
+                                      f"{res.get('url', '')}\n"
+                                      "(Kullanıcıya TÜRKÇE kısa rapor ver.)")
+                    else:
+                        result = ("Görev başarısız: "
+                                  + (res.get("error") or "bilinmeyen")
+                                  + " — adımlar: "
+                                  + " → ".join(res.get("steps", [])))
+
+            elif name == "browser_vision":
+                question = (args.get("question") or
+                            "Bu sayfada ne görüyorsun? Kullanıcının sorusuna göre analiz et.")
+                res = await loop.run_in_executor(None, self.ui.browser_capture)
+                if not res.get("ok"):
+                    result = ("Sayfa görüntüsü alınamadı: "
+                              + (res.get("error") or "?"))
+                else:
+                    import base64 as _b64m
+                    b64 = _b64m.b64encode(res.get("png") or b"").decode("ascii")
+                    self._pending_vision = (
+                        res.get("png") or b"", "image/png", question,
+                        "browser")
+                    result = ("Sayfa görüntüsü yakalandı ve sana gönderildi — "
+                              "şimdi görüntüyü inceleyip soruyu yanıtla: "
+                              + question)
+
+            elif name == "browser_media":
+                act = (args.get("action") or "").lower()
+                if act == "screenshot":
+                    res = await loop.run_in_executor(
+                        None, self.ui.browser_screenshot)
+                    if res.get("ok"):
+                        result = ("Ekran görüntüsü kaydedildi: "
+                                  + res.get("path", ""))
+                    else:
+                        result = ("Ekran görüntüsü alınamadı: "
+                                  + (res.get("error") or "?"))
+                elif act == "translate":
+                    lang = args.get("language") or "tr"
+                    res = await loop.run_in_executor(
+                        None, lambda: self.ui.browser_translate(lang))
+                    if res.get("ok"):
+                        result = ("Sayfa " + lang.upper() +
+                                  " diline çevrildi ve ekranda gösterildi. "
+                                  "İlk bölüm: "
+                                  + (res.get("text", "")[:400]))
+                    else:
+                        result = ("Çeviri başarısız: "
+                                  + (res.get("error") or "?"))
+                else:
+                    result = "Bilinmeyen browser_media eylemi."
+
+            elif name == "browser_vpn_speed":
+                act = (args.get("action") or "speed_test").lower()
+                auto = "1" if act == "auto" else "0"
+                res = await loop.run_in_executor(
+                    None, lambda: self.ui.browser_vpn_speed_test(
+                        auto_connect=(auto == "1")))
+                rows = res.get("results", [])
+                ok_rows = [r for r in rows if r.get("ms") is not None]
+                ok_rows.sort(key=lambda r: r["ms"])
+                lines = [f"{r['name']} [{r['region']}] — {r['ms']:.0f} ms"
+                         for r in ok_rows[:6]]
+                dead = sum(1 for r in rows if r.get("ms") is None)
+                result = (f"Hız testi: {len(ok_rows)} profil ölçüldü"
+                          + (f", {dead} erişilemedi" if dead else "")
+                          + ".\n" + "\n".join(lines))
+                if res.get("selected"):
+                    result += (f"\n► OTOMATİK BAĞLANILDI: "
+                               f"{res['selected']} ({res.get('upstream', '')})")
+                elif not res.get("ok"):
+                    result = ("Hiçbir VPN profiline ulaşılamadı — "
+                              "host/port ayarlarını kontrol edin.")
 
             elif name == "file_controller":
                 r = await loop.run_in_executor(None, lambda: file_controller(parameters=args, player=self.ui))
@@ -833,6 +1515,103 @@ class MehmetLive:
                         f"Do NOT describe or guess content — the actual image arrives in the NEXT message."
                     )
 
+            elif name == "watch_party":
+                act = (args.get("action") or "toggle").lower()
+                wp = self._watch_party
+                # ── canlı özet: "şimdiye kadar izlediklerimizi özetle" ──
+                if act == "summary":
+                    if wp is None or not wp.active:
+                        result = ("İzleme modu açık değil — önce 'benimle izle' "
+                                  "demen lazım.")
+                    else:
+                        res = wp.summary_request()
+                        if res.get("ok"):
+                            st = res.get("stats", {})
+                            mins = max(1, int(st.get("duration_s", 0)) // 60)
+                            result = (
+                                "[WATCH_SUMMARY] Özet isteği canlı oturuma gönderildi. "
+                                f"Oturum: {mins} dk, {st.get('frames', 0)} kare, "
+                                f"{st.get('speech_count', 0)} sistem konuşması. "
+                                "ŞİMDİ oturuma gelen son kareyi ve bağlamı kullanarak "
+                                "3-5 cümlelik samimi Türkçe özet söyle — ne izledik, "
+                                "öne çıkan anlar, esprini de kat.")
+                        else:
+                            result = f"Özet alınamadı: {res.get('error', '?')}"
+                elif act == "memory":
+                    rows = wp_memory_list(limit=int(args.get("limit") or 5))
+                    if not rows:
+                        result = "İzleme hafızası boş — henüz kayıtlı oturum yok."
+                    else:
+                        lines = [f"• [{r['ts']}] {r['text'][:160]}" for r in rows]
+                        result = ("İzleme hafızasındaki son oturumlar:\n"
+                                  + "\n".join(lines)
+                                  + "\nBunları kendi cümlelerinle, samimi özetle.")
+                elif act == "find":
+                    q = args.get("query") or ""
+                    hits = wp_memory_search(q, limit=3)
+                    if not hits:
+                        result = f"'{q}' için izleme hafızasında kayıt yok."
+                    else:
+                        lines = [f"• [{r['ts']}] {r['text'][:200]}" for r in hits]
+                        result = ("İzleme hafızasından bulunanlar:\n"
+                                  + "\n".join(lines)
+                                  + "\nBunları samimi bir dille anlat.")
+                elif act == "start":
+                    if wp is None or wp.active:
+                        result = "İzleme modu zaten açık, BaranTi."
+                    else:
+                        wp.start()
+                        result = (
+                            "[WATCH_MODE_ON] ŞİMDİ canlı izleme moduna geçtin. "
+                            "Ekran kareleri sana saniyelik akacak. Bunu kısa ve "
+                            "samimi bir cümleyle duyur (örn: 'İzliyorum, BaranTi.') "
+                            "— uzun açıklama YAPMA.")
+                elif act == "stop":
+                    if wp is None or not wp.active:
+                        result = "İzleme modu zaten kapalı."
+                    else:
+                        wp.stop()
+                        result = (
+                            "[WATCH_MODE_OFF] İzleme modu kapandı. Kısa bir "
+                            "veda cümlesi söyle ve normal moduna dön.")
+                else:   # toggle
+                    if wp is not None and wp.active:
+                        wp.stop()
+                        result = (
+                            "[WATCH_MODE_OFF] İzleme modu kapandı. Kısa bir "
+                            "veda cümlesi söyle ve normal moduna dön.")
+                    else:
+                        if wp is None:
+                            self._watch_party = self._make_watch_party()
+                            wp = self._watch_party
+                        wp.start()
+                        result = (
+                            "[WATCH_MODE_ON] ŞİMDİ canlı izleme moduna geçtin. "
+                            "Ekran kareleri sana saniyelik akacak. Bunu kısa ve "
+                            "samimi bir cümleyle duyur (örn: 'İzliyorum, BaranTi.') "
+                            "— uzun açıklama YAPMA.")
+
+            elif name == "ask_nemotron":
+                prompt = args.get("prompt") or ""
+                if not prompt:
+                    result = "Nemotron'a boş soru gönderilmez."
+                else:
+                    try:
+                        from core import nim_client
+                        ans = await loop.run_in_executor(
+                            None,
+                            lambda: nim_client.ask_nemotron(
+                                prompt,
+                                system=("Sen Mehmet adlı asistanın derin düşünce "
+                                        "motorusun. Türkçe, net ve yapılandırılmış "
+                                        "cevap ver; sonuç kısmı en sonda olsun."),
+                                use_history=True))
+                        result = (f"[NEMOTRON] {ans[:1800]}\n\n"
+                                  "(Bunu kullaniciya kendi tarzında özetle — "
+                                  "ham metni aynen okuma.)")
+                    except Exception as e:
+                        result = f"Nemotron'a ulaşılamadı: {e}"
+
             elif name == "close_camera":
                 self.ui.stop_camera_stream()
                 result = "Camera closed."
@@ -896,10 +1675,6 @@ class MehmetLive:
                     os._exit(0)
                 threading.Thread(target=_shutdown, daemon=True).start()
 
-            elif mcp_manager.has_tool(name):
-                r = await mcp_manager.async_call_tool(name, args)
-                result = r or "Done."
-
             else:
                 result = f"Unknown tool: {name}"
 
@@ -929,6 +1704,11 @@ class MehmetLive:
         def callback(indata, frames, time_info, status):
             with self._speaking_lock:
                 Mehmet_speaking = self._is_speaking
+            # İzliyorum modu: sistem sesi iletilirken PC mikrofonu susturulur —
+            # video/dizi sesleri kullanıcı sözü gibi oturuma sızmaz.
+            wp = self._watch_party
+            if wp is not None and not wp.mic_allowed():
+                return
             if not Mehmet_speaking and not self.ui.muted and not self._phone_active:
                 data = indata.tobytes()
                 loop.call_soon_threadsafe(
@@ -1300,6 +2080,29 @@ class MehmetLive:
                 )
                 if not text:
                     continue
+                # ── özel wp: komutları — telefondaki izleme kartı butonları ──
+                # (LLM'e gönderilmez, doğrudan izleme modunu açar/kapatır)
+                if text.startswith("wp:"):
+                    op = text[3:].strip().lower()
+                    wp = self._watch_party
+                    if op == "on":
+                        if wp is None:
+                            self._watch_party = self._make_watch_party()
+                            wp = self._watch_party
+                        if not wp.active:
+                            wp.start()
+                        asyncio.create_task(self._dashboard.broadcast(
+                            {"type": "sys", "text": "İzleme modu açıldı — canlı kareler telefonuna akıyor."}))
+                    elif op == "off":
+                        if wp is not None and wp.active:
+                            wp.stop()
+                        asyncio.create_task(self._dashboard.broadcast(
+                            {"type": "sys", "text": "İzleme modu kapandı."}))
+                    elif op == "state":
+                        asyncio.create_task(self._dashboard.broadcast(
+                            {"type": "watch_state",
+                             "on": bool(wp is not None and wp.active)}))
+                    continue
                 # Wait up to 8s for session to become ready after a wake
                 for _ in range(80):
                     if self.session:
@@ -1364,6 +2167,8 @@ class MehmetLive:
                     self._vision_busy          = False
                     self._vision_last_time     = 0.0
                     self._interrupted          = False
+                    # İzliyorum modu: bu oturumun canlı bağlantısına bağlı kancalar
+                    self._watch_party = self._make_watch_party()
 
                     print("[Mehmet] Connected.")
                     self.ui.set_state("LISTENING")
@@ -1385,6 +2190,11 @@ class MehmetLive:
                     if not self._briefing_sent and get_brief_enabled():
                         self._briefing_sent = True
                         tg.create_task(self._send_startup_briefing())
+
+                    # Haftalık web raporu alışkanlığı — 7 günde bir, arka planda
+                    if not self._weekly_report_checked:
+                        self._weekly_report_checked = True
+                        tg.create_task(self._maybe_send_weekly_report())
 
             except KeyboardInterrupt:
                 raise
@@ -1427,6 +2237,13 @@ class MehmetLive:
                     self._conn_backoff = 3
             finally:
                 self.session = None
+                # İzliyorum modu canlı bağlantıya bağlı — oturum kapanınca durdur
+                try:
+                    if self._watch_party is not None:
+                        self._watch_party.stop()
+                        self._watch_party = None
+                except Exception:
+                    pass
 
             self.set_speaking(False)
             self.ui.set_state("SLEEPING")

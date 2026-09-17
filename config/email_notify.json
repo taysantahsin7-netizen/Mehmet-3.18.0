@@ -1,0 +1,9 @@
+{
+ "enabled": false,
+ "smtp_host": "smtp.gmail.com",
+ "smtp_port": 587,
+ "tls": true,
+ "user": "",
+ "password": "",
+ "to_addr": ""
+}

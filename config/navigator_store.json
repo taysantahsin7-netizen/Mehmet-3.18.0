@@ -1,0 +1,87 @@
+{
+ "history": [
+  {
+   "key": "https://example.com/",
+   "url": "https://example.com/",
+   "title": "OkumaTesti",
+   "count": 3,
+   "ts": 1789562209.1526911
+  },
+  {
+   "key": "https://www.google.com/",
+   "url": "https://www.google.com/",
+   "title": "Google",
+   "count": 17,
+   "ts": 1789661426.379618
+  },
+  {
+   "key": "https://www.youtube.com/",
+   "url": "https://www.youtube.com/?app=desktop&hl=tr",
+   "title": "YouTube",
+   "count": 4,
+   "ts": 1789574380.7489312
+  },
+  {
+   "key": "https://www.google.com/search",
+   "url": "https://www.google.com/search?q=4+MAL+BALIKLARI+SİLAHLA+AVLIYORUZ",
+   "title": "PVZ Replanted ds 187 - Google'da Ara",
+   "count": 9,
+   "ts": 1789653472.5789347
+  },
+  {
+   "key": "https://www.youtube.com/results",
+   "url": "https://www.youtube.com/results?search_query=lofi+hip+hop",
+   "title": "youtube.com/results?search_query=lofi+hip+hop",
+   "count": 6,
+   "ts": 1789569863.7914653
+  },
+  {
+   "key": "https://brantial.ai/tr/",
+   "url": "https://brantial.ai/tr/",
+   "title": "Brantial – Yapay Zeka Arama Çağında Görünür Kalın",
+   "count": 4,
+   "ts": 1789569719.8597171
+  },
+  {
+   "key": "https://barant.com/",
+   "url": "https://barant.com/",
+   "title": "BARANT Technology Group",
+   "count": 1,
+   "ts": 1789569824.3022163
+  },
+  {
+   "key": "https://www.youtube.com/watch",
+   "url": "https://www.youtube.com/watch?v=KUowAE7mtAM",
+   "title": "🔴YENİ MİNİ GAMESLER VE R.I.P MODU | 🌻Plant's vs Zombies:Replanted🌻 [Canlı Yayın] - YouTube",
+   "count": 6,
+   "ts": 1789653934.826368
+  },
+  {
+   "key": "https://www.youtube.com/@DS_187",
+   "url": "https://www.youtube.com/@DS_187",
+   "title": "《 DS_187 》 - YouTube",
+   "count": 1,
+   "ts": 1789648578.3426287
+  },
+  {
+   "key": "https://www.youtube.com/channel/UC6H1K6ynL8dcItSsB3p36Dw",
+   "url": "https://www.youtube.com/channel/UC6H1K6ynL8dcItSsB3p36Dw",
+   "title": "《 DS_187 》 - YouTube",
+   "count": 1,
+   "ts": 1789652505.0986228
+  }
+ ],
+ "bookmarks": [
+  {
+   "key": "https://example.com/",
+   "url": "https://example.com/",
+   "title": "Example Domain",
+   "ts": 1788894205.7304325
+  }
+ ],
+ "view": {
+  "dark": true,
+  "font_pt": 2,
+  "zoom_pct": 100
+ }
+}

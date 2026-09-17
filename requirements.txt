@@ -1,5 +1,7 @@
 PyQt6
+PyQt6-WebEngine
 sounddevice
+soundcard; sys_platform == "win32"
 google-genai
 google-generativeai
 pillow

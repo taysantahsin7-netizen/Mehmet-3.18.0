@@ -1,0 +1,77 @@
+{
+  "profiles": [
+    {
+      "id": "eu-socks",
+      "name": "Avrupa SOCKS",
+      "region": "EU",
+      "protocol": "socks5",
+      "host": "",
+      "port": 1080,
+      "username": "",
+      "password": ""
+    },
+    {
+      "id": "us-http",
+      "name": "Amerika HTTP",
+      "region": "US",
+      "protocol": "http",
+      "host": "",
+      "port": 8080,
+      "username": "",
+      "password": ""
+    },
+    {
+      "id": "p9233603",
+      "name": "ÖlüUç2",
+      "region": "XX",
+      "protocol": "socks5",
+      "host": "10.255.255.1",
+      "port": 9,
+      "username": "",
+      "password": ""
+    },
+    {
+      "id": "p9264129",
+      "name": "ÖlüUç3",
+      "region": "XX",
+      "protocol": "socks5",
+      "host": "10.255.255.1",
+      "port": 9,
+      "username": "",
+      "password": ""
+    },
+    {
+      "id": "p9364353",
+      "name": "ÖlüUç4",
+      "region": "XX",
+      "protocol": "socks5",
+      "host": "10.255.255.1",
+      "port": 9,
+      "username": "",
+      "password": ""
+    },
+    {
+      "id": "p9875602",
+      "name": "ÖlüUç",
+      "region": "XX",
+      "protocol": "socks5",
+      "host": "10.255.255.1",
+      "port": 9,
+      "username": "",
+      "password": ""
+    },
+    {
+      "id": "p8893611",
+      "name": "BaranT",
+      "region": "BA",
+      "protocol": "socks5",
+      "host": "",
+      "port": 0,
+      "username": "",
+      "password": ""
+    }
+  ],
+  "enabled": false,
+  "last_profile_id": "p9233603",
+  "kill_switch": true
+}
